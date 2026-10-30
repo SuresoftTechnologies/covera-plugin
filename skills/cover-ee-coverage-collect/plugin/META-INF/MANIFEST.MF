@@ -1,0 +1,18 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: COVER CDT Coverage Collector
+Bundle-SymbolicName: com.qualityscroll.cover.collect;singleton:=true
+Bundle-Version: 0.0.1
+Bundle-Activator: com.qualityscroll.cover.collect.Activator
+Bundle-Vendor: QualityScroll
+Bundle-RequiredExecutionEnvironment: JavaSE-17
+Require-Bundle: org.eclipse.core.runtime;bundle-version="[3.31.100,3.32.0)",
+ org.eclipse.core.resources,
+ org.eclipse.ui,
+ org.eclipse.debug.core,
+ org.eclipse.cdt.core,
+ org.eclipse.cdt.debug.core,
+ org.eclipse.cdt.dsf;bundle-version="[2.12.100,2.13.0)",
+ org.eclipse.cdt.dsf.gdb;bundle-version="[7.1.300,7.2.0)",
+ com.google.gson;bundle-version="[2.11.0,2.12.0)"
+Bundle-ActivationPolicy: lazy

@@ -1,0 +1,44 @@
+{
+  "pluginId": "com.qualityscroll.cover.collect",
+  "version": "0.0.1",
+  "protocol": 1,
+  "jar": "com.qualityscroll.cover.collect_0.0.1.jar",
+  "sha256": "a3459e5ccb27da2d273f8501b20ac7368467ce00df910765fc0effef8eadd73c",
+  "sourceCommit": null,
+  "sourceHashes": {
+    "src/com/qualityscroll/cover/collect/Activator.java": "192648d7b8ab4bbc0dd0aa54f811f1799ef4fa90cfb161a1608a6e5747ccaa0b",
+    "src/com/qualityscroll/cover/collect/Bridge.java": "a6943cab5522f69d399bd25a5e9f5b421e022e50690d1510b78188408923e076",
+    "src/com/qualityscroll/cover/collect/BufferRules.java": "de8392d43919690b8c81bb4c9352c33231a8f4380adb802e3af204b1c4cd013a",
+    "src/com/qualityscroll/cover/collect/DsfCapture.java": "0dfe5d3b12d66d89e5723f6b2adec483183dd9c06c11cb822460b8f2f4adca9b",
+    "src/com/qualityscroll/cover/collect/Startup.java": "8f1d39f52e0221d63113d7c323caeeb871eb2266141e206cfae6a42ade9b01f8",
+    "META-INF/MANIFEST.MF": "936b0eb3ce58a505f8edfb371561f27ea63aa5fbd23ec30666bf93a209917025",
+    "plugin.xml": "f0baba9c889ff26ea38f65355e9e7b6a8edb0f2c20925d0453da8df21677c047",
+    "build_plugin.py": "d3c1ab32dc948860d3e83c236ba3a0f6e61b2c7346bc78dd71b8d32dc9126214",
+    "build.properties": "7ef1da73dd49dd4ea9ede1775669df4fe74e6057d9d040e5fbdefb48edb4cf8b"
+  },
+  "javaRelease": 17,
+  "compatibleBundles": {
+    "org.eclipse.core.runtime": {
+      "min": "3.31.100",
+      "maxExclusive": "3.32.0"
+    },
+    "org.eclipse.cdt.dsf": {
+      "min": "2.12.100",
+      "maxExclusive": "2.13.0"
+    },
+    "org.eclipse.cdt.dsf.gdb": {
+      "min": "7.1.300",
+      "maxExclusive": "7.2.0"
+    },
+    "com.google.gson": {
+      "min": "2.11.0",
+      "maxExclusive": "2.12.0"
+    }
+  },
+  "compiledAgainst": [
+    "com.google.gson_2.11.0.jar",
+    "org.eclipse.cdt.dsf.gdb_7.1.300.202312272342.jar",
+    "org.eclipse.cdt.dsf_2.12.100.202402230238.jar",
+    "org.eclipse.core.runtime_3.31.100.v20240524-2010.jar"
+  ]
+}

@@ -1,0 +1,141 @@
+{
+  "contract": "cover-open-api/v1",
+  "serverVersion": "1.0.0",
+  "source": "2026-09-11 GET /cover-open-api/v3/api-docs/v1-ko-KR and checked-out cover-open-api v1 controllers/DTO/services",
+  "discoveryPath": "/v3/api-docs/v1-ko-KR",
+  "authentication": {
+    "type": "accessKey",
+    "header": "Authorization",
+    "format": "Bearer {ACCESS_KEY}",
+    "tokenEnvironmentVariable": "COVER_ACCESS_KEY"
+  },
+  "operations": {
+    "getAgents": {
+      "operationId": "getAgents", "method": "GET", "path": "/v1/agents",
+      "mutation": false, "successStatus": [200]
+    },
+    "getAgent": {
+      "operationId": "getAgent",
+      "method": "GET",
+      "path": "/v1/agent",
+      "mutation": false,
+      "successStatus": [200],
+      "requiredQuery": ["macAddress"]
+    },
+    "createAgent": {
+      "operationId": "createAgent",
+      "method": "POST",
+      "path": "/v1/agent",
+      "mutation": true,
+      "successStatus": [200],
+      "request": {
+        "type": "object",
+        "required": ["monitoringPath", "agentType", "agentName", "licenseActivation", "macAddress"],
+        "properties": {
+          "monitoringPath": {"type": "string", "minLength": 1},
+          "agentType": {"type": "string", "minLength": 1},
+          "agentName": {"type": "string", "minLength": 1},
+          "licenseActivation": {"type": "boolean"},
+          "macAddress": {"type": "string", "pattern": "^([0-9a-fA-F]{2}-){5}[0-9a-fA-F]{2}$"},
+          "userName": {"type": "string", "minLength": 1},
+          "permission": {"type": "string", "enum": ["Owner", "Group", "Other"]}
+        }
+      }
+    },
+    "updateAgent": {
+      "operationId": "updateAgent",
+      "method": "PATCH",
+      "path": "/v1/agent",
+      "mutation": true,
+      "successStatus": [200],
+      "requiredQuery": ["macAddress"],
+      "request": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "properties": {
+          "agentName": {"type": "string", "minLength": 1},
+          "agentType": {"type": "string", "minLength": 1},
+          "monitoringPath": {"type": "string", "minLength": 1},
+          "targetLogPath": {"type": "string"},
+          "licenseActivation": {"type": "boolean"},
+          "permission": {"type": "string", "enum": ["Owner", "Group", "Other"]},
+          "inclusions": {"type": "array", "items": {"type": "string"}},
+          "exclusionPolicyIds": {"type": "array", "items": {"type": "string"}},
+          "toolChains": {"type": "array", "items": {
+            "type": "object",
+            "required": ["toolchainName", "wrapperName", "toolKind"],
+            "additionalProperties": false,
+            "properties": {
+              "toolchainName": {"type": "string", "minLength": 1},
+              "wrapperName": {"type": "string", "minLength": 1},
+              "toolKind": {"type": "string", "enum": ["C_COMPILER", "CPP_COMPILER", "C_CPP_COMPILER", "C_LINKER", "CPP_LINKER", "ARCHIVER"]},
+              "toolChainInfoId": {"type": "string", "minLength": 1},
+              "testingStandardId": {"type": "string"},
+              "buildTracking": {"type": "boolean"},
+              "encodingType": {"type": "string"},
+              "detectIncludeOption": {"type": "boolean"},
+              "includePathFlag": {"type": "array", "items": {"type": "string"}}
+            }
+          }}
+        }
+      }
+    },
+    "createToolChainInfo": {
+      "operationId": "createToolChainInfo", "method": "POST", "path": "/v1/toolchain-infos",
+      "mutation": true, "successStatus": [201],
+      "request": {
+        "type": "object", "additionalProperties": false,
+        "required": ["aliasName", "majorKind", "minorKind", "targetKind"],
+        "properties": {
+          "aliasName": {"type": "string", "format": "parserAlias"},
+          "majorKind": {"type": "string", "enum": ["general", "gcc", "cl", "SunCC", "xLC", "aCC", "armcc", "cl30", "chc12"]},
+          "minorKind": {"type": "string", "enum": ["general", "mingw", "unknown"]},
+          "targetKind": {"type": "string", "enum": ["general", "ARM_general", "ARMV4i", "AVR", "HC12", "MIPS", "STM32", "TMS320Cxx", "x86", "x64"]},
+          "majorVersion": {"type": "integer", "minimum": 0},
+          "minorVersion": {"type": "integer", "minimum": 0},
+          "toolChainContent": {"type": "array", "items": {"type": "string", "format": "parserLine"}}
+        }
+      }
+    },
+    "updateToolChainInfo": {
+      "operationId": "updateToolChainInfo", "method": "PATCH", "path": "/v1/toolchain-infos/{id}",
+      "mutation": true, "successStatus": [200], "requiredPath": ["id"],
+      "request": {
+        "type": "object", "additionalProperties": false, "minProperties": 1,
+        "properties": {
+          "aliasName": {"type": "string", "format": "parserAlias"},
+          "majorKind": {"type": "string", "enum": ["general", "gcc", "cl", "SunCC", "xLC", "aCC", "armcc", "cl30", "chc12"]},
+          "minorKind": {"type": "string", "enum": ["general", "mingw", "unknown"]},
+          "targetKind": {"type": "string", "enum": ["general", "ARM_general", "ARMV4i", "AVR", "HC12", "MIPS", "STM32", "TMS320Cxx", "x86", "x64"]},
+          "majorVersion": {"type": "integer", "minimum": 0},
+          "minorVersion": {"type": "integer", "minimum": 0},
+          "toolChainContent": {"type": "array", "items": {"type": "string", "format": "parserLine"}}
+        }
+      }
+    },
+    "getToolChainInfos": {
+      "operationId": "getToolChainInfos",
+      "method": "GET",
+      "path": "/v1/toolchain-infos",
+      "mutation": false,
+      "successStatus": [200]
+    },
+    "getTestingStandards": {
+      "operationId": "getTestingStandards",
+      "method": "GET",
+      "path": "/v1/testing-standards",
+      "mutation": false,
+      "successStatus": [200]
+    },
+    "getExclusionPolicies": {
+      "operationId": "getExclusionPolicies",
+      "method": "GET",
+      "path": "/v1/exclusion-policies",
+      "mutation": false,
+      "successStatus": [200]
+    }
+  },
+  "unsupportedOperations": ["deleteToolChainInfo"],
+  "unsupportedPolicy": "Reuse compatible ToolChainInfo definitions first. Create missing definitions only from confirmed parser content. Updating a shared definition requires an explicit scoped request; built-in original=true definitions cannot be updated. Deletion is not exposed."
+}
