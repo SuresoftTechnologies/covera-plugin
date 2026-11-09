@@ -1,4 +1,4 @@
-"""Typed command execution, plan execution, and artifact snapshots."""
+"""Typed command execution and artifact snapshots."""
 
 from __future__ import annotations
 
@@ -20,12 +20,8 @@ from cover_build.common import envelopes
 from cover_build.common import fileio
 from cover_build.common import native_logs
 from cover_build.common import pathutil
-from cover_build.common import toolchains
 from cover_build.core import errors
 from cover_build.core.errors import WorkflowWaiting
-
-
-PLAN_SCHEMA = "cover-build-plan/v1"
 
 
 def default_parallelism() -> int:
@@ -93,6 +89,24 @@ def read_output_tail(path: str | Path, limit: int = 256 * 1024) -> str:
 
 
 def run_command(spec: dict[str, Any], log_path: Path) -> dict[str, Any]:
+    return _run_command(spec, log_path)
+
+
+def _publish_command_log(partial_path: Path, log_path: Path) -> None:
+    # Antivirus/indexers can briefly hold a closed file on Windows.
+    for attempt in range(5):
+        try:
+            os.replace(partial_path, log_path)
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in {32, 33} or attempt == 4:
+                raise errors.ExecutorError(
+                    "BUILD_LOG_FINALIZE_FAILED", str(exc), [str(partial_path)]
+                ) from exc
+            time.sleep(0.1 * (2 ** attempt))
+
+
+def _run_command(spec: dict[str, Any], log_path: Path) -> dict[str, Any]:
     executable = pathutil.canonical(spec["executable"])
     cwd = pathutil.canonical(spec["workingDirectory"])
     arguments = spec.get("arguments", [])
@@ -180,11 +194,14 @@ def run_command(spec: dict[str, Any], log_path: Path) -> dict[str, Any]:
         )
     process = subprocess.Popen([str(executable), *arguments], **process_arguments)
     reader_error: list[BaseException] = []
+    stop_reader = threading.Event()
 
     def consume() -> None:
         try:
-            with partial_path.open("w", encoding="utf-8", newline="") as output:
+            with process.stdout, partial_path.open("w", encoding="utf-8", newline="") as output:
                 for line in process.stdout:
+                    if stop_reader.is_set():
+                        break
                     line = safe_line(line)
                     output.write(line)
                     output.flush()
@@ -215,15 +232,38 @@ def run_command(spec: dict[str, Any], log_path: Path) -> dict[str, Any]:
             next_heartbeat = now + 15
         time.sleep(0.2)
     process.wait()
+
+    def record_metrics(path: Path, complete: bool) -> None:
+        fileio.atomic_write_json(log_path.with_suffix(".metrics.json"), {
+            "log": str(path), "phase": latest_log.stem, "attempt": attempt,
+            "startedAt": started_at, "finishedAt": fileio.utc_now(),
+            "durationMs": round((time.monotonic() - started) * 1000),
+            "exitCode": process.returncode, "timedOut": timed_out,
+            "logComplete": complete,
+        })
+
     if reader is not None:
-        reader.join(timeout=10)
-        assert process.stdout is not None
-        if reader.is_alive():
-            process.stdout.close()
-            reader.join(timeout=2)
-        elif not process.stdout.closed:
-            process.stdout.close()
+        drain_timeout = float(spec.get("logDrainTimeoutSeconds", 60))
+        drain_deadline = time.monotonic() + max(0, drain_timeout)
+        next_drain_heartbeat = time.monotonic() + 15
+        while reader.is_alive():
+            remaining = drain_deadline - time.monotonic()
+            if remaining <= 0:
+                # Only the reader owns/closes its pipe and output file. Closing
+                # a pipe from this thread can block or race with its next read.
+                stop_reader.set()
+                record_metrics(partial_path, False)
+                raise errors.ExecutorError(
+                    "BUILD_LOG_DRAIN_TIMEOUT",
+                    f"Command exited with {process.returncode}, but log capture did not finish within {drain_timeout:g} seconds",
+                    [str(partial_path), str(log_path.with_suffix(".metrics.json"))],
+                )
+            reader.join(timeout=min(0.2, remaining))
+            if time.monotonic() >= next_drain_heartbeat and reader.is_alive():
+                print(f"[COVER] waiting for command log capture: {partial_path}", file=sys.stderr, flush=True)
+                next_drain_heartbeat = time.monotonic() + 15
     if reader_error:
+        record_metrics(partial_path, False)
         raise errors.ExecutorError("BUILD_LOG_STREAM_FAILED", str(reader_error[0]), [str(partial_path)])
     if unpiped_output:
         if native_console:
@@ -232,14 +272,13 @@ def run_command(spec: dict[str, Any], log_path: Path) -> dict[str, Any]:
             message = "[COVER] command output was inherited by the current Agent terminal; no pipe capture was used"
         log_path.write_text(f"{message}; exitCode={process.returncode}.\n", encoding="utf-8")
     else:
-        os.replace(partial_path, log_path)
-    shutil.copyfile(log_path, latest_log)
-    fileio.atomic_write_json(log_path.with_suffix(".metrics.json"), {
-        "log": str(log_path), "phase": latest_log.stem, "attempt": attempt,
-        "startedAt": started_at, "finishedAt": fileio.utc_now(),
-        "durationMs": round((time.monotonic() - started) * 1000),
-        "exitCode": process.returncode, "timedOut": timed_out,
-    })
+        record_metrics(partial_path, False)
+        _publish_command_log(partial_path, log_path)
+    record_metrics(log_path, True)
+    try:
+        shutil.copyfile(log_path, latest_log)
+    except OSError as exc:
+        raise errors.ExecutorError("BUILD_LOG_FINALIZE_FAILED", str(exc), [str(log_path)]) from exc
     if timed_out:
         raise errors.ExecutorError("BUILD_COMMAND_TIMEOUT", f"Command exceeded {timeout} seconds", [str(log_path)])
     finished_at = fileio.utc_now()
@@ -256,128 +295,6 @@ def run_command(spec: dict[str, Any], log_path: Path) -> dict[str, Any]:
         "outputTail": "".join(tail),
         "outputMode": output_mode,
     }
-
-
-def reset_shared_coverage_build_directory(plan: dict[str, Any]) -> dict[str, Any] | None:
-    """Reset only generated build state before a shared coverage configure.
-
-    Native and coverage builds deliberately use the same project build
-    directory.  CMake's cache records the compiler and linker, so a clean
-    target alone is insufficient when the native build ran first.  Keep the
-    reset narrow and fail closed: the selected directory must be a child of
-    the project root, and only well-known CMake-generated entries are removed.
-    """
-    if plan.get("reuseOriginalBuildDirectory") is not True:
-        return None
-    adapter = plan.get("adapter")
-    if adapter not in {"CMAKE", "CMAKE_GCC"}:
-        return {"status": "NOT_REQUIRED", "adapter": adapter}
-    project_root = pathutil.canonical(str(plan.get("projectRoot") or ""))
-    build_directory = pathutil.canonical(str(plan.get("buildDirectory") or ""), False)
-    if not project_root.is_dir() or pathutil.same_path(build_directory, project_root) or not pathutil.path_within(build_directory, project_root):
-        raise errors.ExecutorError(
-            "INVALID_SHARED_BUILD_DIRECTORY",
-            "A shared coverage build directory must be an existing project child path",
-            [str(build_directory), str(project_root)],
-        )
-    build_directory.mkdir(parents=True, exist_ok=True)
-    generated_entries = (
-        "CMakeCache.txt",
-        "CMakeFiles",
-        "cmake_install.cmake",
-        "CTestTestfile.cmake",
-        "DartConfiguration.tcl",
-        "Makefile",
-        "build.ninja",
-        "rules.ninja",
-        ".ninja_deps",
-        ".ninja_log",
-        "install_manifest.txt",
-    )
-    removed: list[str] = []
-    for name in generated_entries:
-        target = build_directory / name
-        if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target)
-            removed.append(str(target))
-        elif target.exists() or target.is_symlink():
-            target.unlink()
-            removed.append(str(target))
-    return {
-        "status": "RESET",
-        "adapter": adapter,
-        "buildDirectory": str(build_directory),
-        "removedGeneratedEntries": removed,
-    }
-
-
-def execute_plan(args: argparse.Namespace) -> dict[str, Any]:
-    plan = fileio.load_json(args.plan)
-    if plan.get("schema") != PLAN_SCHEMA:
-        raise errors.ExecutorError("INVALID_PLAN_SCHEMA", f"Expected {PLAN_SCHEMA}")
-    fileio.verify_integrity(plan)
-    if os.name == "nt" and plan.get("adapter") in {"CMAKE", "CMAKE_GCC", "MAKE_GCC"}:
-        cover_config = pathutil.canonical(plan.get("coverConfig", ""))
-        toolchains.parse_cover_wrapper_config(cover_config)
-        if plan.get("coverConfigSha256") != pathutil.sha256_file(cover_config):
-            raise errors.ExecutorError(
-                "COVER_CONFIG_CHANGED",
-                "The validated COVER GCC config changed after build-plan generation",
-                [str(cover_config)],
-            )
-    if args.phase not in plan.get("commands", {}):
-        raise errors.ExecutorError("INVALID_BUILD_PHASE", f"Plan has no phase {args.phase}")
-    log_dir = pathutil.canonical(args.log_dir, False)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    specs = plan["commands"][args.phase]
-    specs = specs if isinstance(specs, list) else [specs]
-    results: list[dict[str, Any]] = []
-    verifications: list[dict[str, Any]] = []
-    shared_build_reset = reset_shared_coverage_build_directory(plan) if args.phase == "configure" else None
-    for index, spec in enumerate(specs, start=1):
-        suffix = f"-{index}" if len(specs) > 1 else ""
-        coverage_spec = dict(spec)
-        coverage_spec["coverToolEnvironment"] = True
-        result = run_command(coverage_spec, log_dir / f"{args.phase}{suffix}.log")
-        if result["exitCode"] != 0:
-            raise errors.ExecutorError("BUILD_COMMAND_FAILED", f"{args.phase} exited with {result['exitCode']}", [result["log"]])
-        # Real executions stream to the log. Unit/integration adapters that
-        # provide an in-memory legacy result remain readable during migration.
-        candidate_log = Path(result["log"])
-        log_source: str | Path = candidate_log if candidate_log.is_file() else str(result.get("output") or "")
-        if output_contains(
-            log_source,
-            r"\[COVER_WARN\s*\]\s*\{Compile:Preprocess\}.*preprocess error",
-            flags=re.IGNORECASE,
-        ):
-            raise errors.ExecutorError(
-                "COVER_PREPROCESS_FAILED",
-                "COVER wrapper reported a preprocessing failure even though the native build exited successfully",
-                [result["log"]],
-            )
-        adapter = plan.get("adapter")
-        if adapter == "MSBUILD_VCXPROJ" and args.phase == "rebuild":
-            verifications.append(native_logs.verify_msbuild_wrapper_text(plan, log_source))
-        if (args.phase == "preflight" and adapter == "MAKE_GCC") or (
-            args.phase in {"build", "rebuild"} and adapter in {"CMAKE", "CMAKE_GCC", "MAKE_GCC"}
-        ):
-            verifications.append(
-                native_logs.verify_gcc_preflight_text(
-                    plan,
-                    log_source,
-                    conservative_native_tokens=args.phase == "preflight",
-                )
-            )
-        results.append(result)
-    return envelopes.envelope(
-        "EXECUTING_BUILD_" + args.phase.upper(),
-        "SUCCEEDED",
-        {
-            "results": results,
-            "verifications": verifications,
-            "sharedBuildDirectoryReset": shared_build_reset,
-        },
-    )
 
 
 def snapshot_artifacts(args: argparse.Namespace) -> dict[str, Any]:

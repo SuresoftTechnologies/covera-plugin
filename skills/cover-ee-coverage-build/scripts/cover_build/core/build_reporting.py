@@ -427,6 +427,10 @@ def build_summary(job: dict[str, Any], final: dict[str, Any]) -> dict[str, Any]:
         "failure": failure,
         "evidenceFiles": sorted(set(evidence_paths + stage_paths)),
     }
+    archive_state = Path(job.get("directories", {}).get("temporary", job.get("jobDirectory", "."))) / "archive-policy-state.json"
+    if archive_state.is_file():
+        summary["archivePolicy"] = _load_json(archive_state)
+    summary["successCriterion"] = "BUILD_EXIT_CODE"
     if job.get("jobDirectory"):
         from cover_build.core.state_store import performance_summary
         summary["performance"] = performance_summary(job)

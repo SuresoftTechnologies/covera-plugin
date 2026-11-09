@@ -54,7 +54,17 @@ def _maven_reactor_root(candidates: list[str], project_root: Path | None) -> str
     return by_path[roots[0]] if len(roots) == 1 else None
 
 
+def java_build_systems(data: dict[str, Any]) -> list[str]:
+    """Keep an independent script selectable even when CI also invokes a plugin build."""
+    candidates = list(data.get("buildSystemCandidates") or [])
+    if "BUILD_SCRIPT" in candidates:
+        return candidates
+    return list(data.get("confirmedBuildSystems") or candidates)
+
+
 def java_build_entries(data: dict[str, Any], system: str, project_root: str | Path | None = None) -> list[str]:
+    if system == "BUILD_SCRIPT":
+        return list(data.get("buildScriptFiles") or [])
     files = data.get("mavenFiles") if system == "MAVEN" else data.get("gradleFiles") if system == "GRADLE" else []
     candidates = [v for v in files or [] if Path(v).name.casefold() in
                   {"pom.xml", "settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts"}]
@@ -135,10 +145,15 @@ def collect_prebuild_decision_bundle(
         supplied_plan = choices.get("originalBuildPlan")
         if isinstance(supplied_plan, dict) and str(supplied_plan.get("driver") or "").startswith("JAVA_"):
             return unresolved
-        systems = list(data.get("confirmedBuildSystems") or data.get("buildSystemCandidates") or [])
+        systems = java_build_systems(data)
         if len(systems) != 1 and choices.get("managedBuildSystem") not in systems:
             unresolved["managedBuildSystem"] = systems
         selected = choices.get("managedBuildSystem") or (systems[0] if len(systems) == 1 else None)
+        if selected in {"BUILD_SCRIPT", "COMMAND_LINE_CANDIDATE"}:
+            unresolved["originalBuildPlan"] = []
+            return unresolved
+        if selected is None:
+            return unresolved
         build_entries = java_build_entries(data, selected, managed.get("projectRoot"))
         if len(build_entries) > 1 and choices.get("managedBuildEntry") not in build_entries:
             unresolved["managedBuildEntry"] = build_entries
@@ -413,3 +428,43 @@ def resolve_visual_studio_project_configurations(
             evidence=[entry, *projects],
         )
     return resolved
+
+
+def select_build_system(
+    supported_build_systems: list[str],
+    stm32cubeide_discovery: dict[str, Any],
+    choices: dict[str, Any],
+    evidence_path: Path | None = None,
+) -> str:
+    """Prefer a confirmed STM32CubeIDE managed project over its generated Makefiles."""
+    status = stm32cubeide_discovery.get("status")
+    evidence = [str(evidence_path)] if evidence_path is not None else []
+    if status == "CONFIRMED":
+        supplied = choices.get("buildSystem")
+        if supplied not in {None, "STM32CUBEIDE"}:
+            raise errors.ExecutorError(
+                "INVALID_WORKFLOW_DECISION",
+                "The selected build system conflicts with a confirmed STM32CubeIDE managed project",
+                stm32cubeide_discovery.get("projects") or evidence,
+            )
+        return "STM32CUBEIDE"
+    if status == "CANDIDATE":
+        candidates = list(dict.fromkeys(["STM32CUBEIDE", *supported_build_systems]))
+        supplied = choices.get("buildSystem")
+        if supplied is not None:
+            return select_one("buildSystem", candidates, choices)
+        raise WorkflowWaiting(
+            "STM32CUBEIDE_CLASSIFICATION_REQUIRED",
+            "Eclipse CDT markers were found, but they do not prove that this is an STM32CubeIDE managed project",
+            {"buildSystem": candidates},
+            decision_owner="MODEL",
+            purpose="BUILD_ENVIRONMENT",
+            evidence=evidence or list(stm32cubeide_discovery.get("candidateEvidence") or []),
+        )
+    if status == "NOT_DETECTED":
+        return select_one("buildSystem", supported_build_systems, choices)
+    raise errors.ExecutorError(
+        "INVALID_STM32CUBEIDE_DISCOVERY",
+        f"Unsupported STM32CubeIDE discovery status: {status}",
+        [stm32cubeide_discovery.get("schema")],
+    )

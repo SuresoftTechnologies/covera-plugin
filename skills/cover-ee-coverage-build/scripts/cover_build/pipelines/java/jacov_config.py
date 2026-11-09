@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from cover_build.core.errors import WorkflowWaiting
 from cover_build.services import agent_open_api
-from cover_build.common import agent_host
+from cover_build.services import agent_host
 from cover_build.common import open_api
 from cover_build.core import errors
 

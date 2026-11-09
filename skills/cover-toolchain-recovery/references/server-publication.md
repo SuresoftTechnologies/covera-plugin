@@ -1,6 +1,6 @@
 # 서버 반영과 되돌리기
 
-로컬 PA 검증과 서버 변경은 별도 명령이다. `verify`의 성공은 `Recovered`이며 이 명령 자체는 서버 설정·Agent를 바꾸지 않는다. 복구 작업에서는 성공 직후 계획과 서버 반영을 추가 승인 없이 이어간다. 진단·로컬 검증만 요청한 경우에는 적용하지 않는다. 기존 툴체인 수정·삭제와 재빌드는 제공하지 않는다.
+서버 PA 실행과 툴체인·Wrapper 변경은 별도 명령이다. `verify`의 성공은 `Recovered`이며 이 명령 자체는 서버 설정·Agent를 바꾸지 않는다. 복구 작업에서는 성공 직후 계획과 서버 반영을 추가 승인 없이 이어간다. 진단·검증만 요청한 경우에는 적용하지 않는다. 기존 툴체인 수정·삭제와 재빌드는 제공하지 않는다.
 
 ## 1. 읽기 전용 반영 계획
 
@@ -28,7 +28,7 @@ python "${SKILL_ROOT}/scripts/cover_recovery.py" publish --case <case.json> --se
 
 - 별도 승인 옵션 없이 실행한다. Access key를 읽기 전에 PA 검증 상태, 계획 digest와 대상 서버를 확인한다.
 - `publication_execution`에 실행한 계획 digest와 시작 시각을 기록한다. Access key 인증은 기존 Open API 계약을 따른다.
-- `InvalidPublishPlan`이면 `publish-plan`으로 계획을 다시 만든다. 대상·설정·표시 정보가 바뀌면 변경된 조건을 다시 검증한다.
+- `InvalidPublishPlan`이면 `publish-plan`으로 계획을 다시 만든다. 현재 계획 형식은 4다. 대상·설정·표시 정보가 바뀌면 변경된 조건을 다시 검증한다.
 - 반영 직전에 전체 Agent 설정·Wrapper 연결과 이전 툴체인의 식별·표시 정보를 다시 대조한다. 변경됐으면 `StaleTarget`/`StaleBaseline`으로 중단한다. ETag 조건부 갱신이 없어 마지막 조회 이후의 동시 변경은 막지 못하므로 대상 설정의 동시 편집·빌드를 피한다.
 - 새 툴체인 생성 → 지정 Wrapper 연결만 변경 → GET으로 저장된 연결 확인 순서다. 다른 Wrapper·설정·기존 툴체인을 보존한다.
 - 성공해도 `ReadyForRebuild`까지만 기록한다. 이후 재빌드와 측정 검증은 빌드 요청의 호출자가 맡는다.

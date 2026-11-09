@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from cover_build.planning import cmake_msbuild
 from cover_build.common import fileio
 from cover_build.common import pathutil
 from cover_build.core import errors
@@ -274,6 +275,21 @@ class ProjectFilePatch:
             (self.backup_directory / _safe_backup_name(record["relativePath"])).write_bytes(current)
             record["backupPath"] = str(self.backup_directory / _safe_backup_name(record["relativePath"]))
         self._write_manifest("BACKED_UP")
+
+    def apply_cmake_msbuild(self, wrappers: dict[str, str]) -> list[str]:
+        if len(self.records) != 1:
+            raise errors.ExecutorError("CMAKE_MSBUILD_PATCH_SCOPE_INVALID", "Patch only the selected CMakeLists.txt")
+        record = self.records[0]
+        path = Path(record["path"])
+        text, encoding, bom = _decode(path, path.read_bytes())
+        if "# BEGIN COVER CMake Visual Studio wrapper injection" in text:
+            raise errors.ExecutorError("CMAKE_MSBUILD_PATCH_EXISTS", "Review the existing COVER CMake injection before replacing it", [str(path)])
+        block = cmake_msbuild.cmake_patch(wrappers)
+        if record["newline"] == "CRLF":
+            block = block.replace("\n", "\r\n")
+        self._write_patched(record, _encode(text + block, encoding, bom))
+        self._write_manifest("PATCHED")
+        return [str(path)]
 
     def apply_cmake(self, wrappers: dict[str, str]) -> list[str]:
         replacements: list[str] = []

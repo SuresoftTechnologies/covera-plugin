@@ -155,11 +155,22 @@ def run_checkpointed(
     inputs: Any,
     action: Callable[[], dict[str, Any]],
     validate: Callable[[dict[str, Any]], bool] | None = None,
+    *,
+    compatible_inputs: tuple[Any, ...] = (),
 ) -> dict[str, Any]:
+    if job.get("archivePolicy") and name != "execute-original-build":
+        inputs = {"stageInputs": inputs, "archivePolicy": job["archivePolicy"]}
     digest = input_digest(inputs)
     if not job.get("jobDirectory"):
         return record(job, stages, number, name, action(), digest, None)
     cached = find_succeeded(job, name, digest)
+    if cached is None:
+        for previous_inputs in compatible_inputs:
+            if job.get("archivePolicy") and name != "execute-original-build":
+                previous_inputs = {"stageInputs": previous_inputs, "archivePolicy": job["archivePolicy"]}
+            cached = find_succeeded(job, name, input_digest(previous_inputs))
+            if cached is not None:
+                break
     if cached is not None and (validate is None or validate(cached[0])):
         result, path = cached
         result = copy.deepcopy(result)

@@ -86,6 +86,7 @@ def expand_response_file_tokens(
     command_directory: str | Path | None,
     *,
     search_directories: Iterable[str | Path] | None = None,
+    directory_cache: dict[str, Path] | None = None,
     max_depth: int = 4,
     max_files: int = 64,
     max_file_bytes: int = 4 * 1024 * 1024,
@@ -93,17 +94,27 @@ def expand_response_file_tokens(
 ) -> dict[str, Any]:
     """Expand local compiler response files without executing their contents."""
     roots: list[Path] = []
+    root_keys: set[str] = set()
 
     def add_root(value: str | Path | None) -> None:
         if value is None:
             return
-        root = pathutil.canonical(value, False)
-        if not any(pathutil.same_path(root, current) for current in roots):
+        key = str(value)
+        root = directory_cache.get(key) if directory_cache is not None else None
+        if root is None:
+            root = pathutil.canonical(value, False)
+            if directory_cache is not None:
+                directory_cache[key] = root
+        identity = os.path.normcase(os.path.normpath(str(root)))
+        if identity not in root_keys:
+            root_keys.add(identity)
             roots.append(root)
 
-    add_root(command_directory)
-    for directory in search_directories or []:
-        add_root(directory)
+    # No filesystem lookups are needed when the command has no response files.
+    if any(token.strip().strip('"').strip("'").startswith("@") for token in tokens):
+        add_root(command_directory)
+        for directory in search_directories or []:
+            add_root(directory)
 
     response_files: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
@@ -206,6 +217,17 @@ def analyze_native_command_text(text: str) -> dict[str, list[str]]:
                 lambda match: f"{match.group(1)}@{match.group(2)}{match.group(1)}",
                 segment,
             )
+            # MSBuild displays absolute MSVC tool paths without quotes, even
+            # under Program Files. Quote only the leading known tool path for
+            # parsing; executable existence is checked by the tool resolver.
+            tokenizable = re.sub(
+                r'^(?P<tool>(?:[A-Za-z]:[\\/]|\\\\)[^"\r\n<>|;&]*?[\\/]'
+                r'(?:cl|clang-cl|link|lld-link|lib|llvm-lib)\.exe)(?=\s|$)',
+                lambda match: '"' + match.group("tool") + '"',
+                tokenizable,
+                count=1,
+                flags=re.IGNORECASE,
+            )
             try:
                 tokens = shlex.split(tokenizable, posix=False)
             except ValueError:
@@ -241,8 +263,11 @@ def analyze_native_command_text(text: str) -> dict[str, list[str]]:
                     inspect(" ".join(tokens[switch + 1 :]), depth + 1)
 
     for raw_line in text.splitlines():
-        if raw_line.strip():
-            inspect(raw_line.strip())
+        # Ninja verbose output prefixes commands with its completed/total count.
+        # Strip only that status prefix, not arbitrary bracketed diagnostics.
+        command = re.sub(r"^\[\d+/\d+\]\s+", "", raw_line.strip(), count=1)
+        if command:
+            inspect(command)
     return {"executables": executables, "tokens": command_tokens}
 
 

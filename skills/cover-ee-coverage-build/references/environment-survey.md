@@ -34,7 +34,7 @@
 - 실제 원본 빌드에서 관찰한 컴파일러·링커·아카이버와 산출물: `original-build-evidence.json`
 - Agent 준비와 래퍼 동기화: 해당 Agent 단계 JSON
 - CMake/Make `COMMAND_LINE` 시도·실패와 `PROJECT_FILE_PATCH`·복구: 커버리지 빌드 단계 JSON
-- 래퍼 호출 검증, 신규 산출물: 각 검증 단계 JSON
+- 커버리지 빌드 명령·종료 코드·로그 경로와 설정 적용 결과: 각 실행 단계 JSON
 - 빌드 시스템·실제 커버리지 명령·선택 타깃·산출물의 공통 요약: `workflow-state.json.result.buildSummary`
 - 최종 결과: 위 증거와 공통 요약을 읽어 작성한 자연어 요약
 

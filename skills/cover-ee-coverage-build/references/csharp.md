@@ -1,5 +1,10 @@
 # C# / MSBuild
 
+## 빌드 결과 판정 정책
+
+커버리지 빌드는 실행 명령의 종료 코드가 0이면 성공, 0이 아니면 실패로 판정한다. 탐침 여부를 확인하기 위한 래퍼 호출·우회 로그 검사, 심볼 검사, C#/Java 처리 건수 집계와 빌드 후 산출물 갱신·경로 비교는 수행하지 않는다. 재사용 설정으로 재빌드할 때도 종료 코드로 판정한다. 설정 적용 결과는 빌드 결과와 별도로 보고하며, 설정 적용 실패로 이미 성공한 빌드 결과를 변경하지 않는다. 원본 빌드의 도구·산출물 조사, 실행 전 설정·출력 경로 검증, 백업·복구는 유지한다.
+
+
 ## 1. 환경과 대상 확정
 
 1. `CODESCROLL_TM_SERVER_URL`, `CODESCROLL_TM_INSTALL_PATH`, 프로젝트 절대 경로를 공통 시작 조건으로 확인한다. 최초 요청에 Access Key가 없으면 채팅으로 먼저 받고 메모리에만 보관하되, C# 원본 빌드가 끝난 뒤 Agent·COVER 서버 작업 직전에만 사용한다.
@@ -25,7 +30,7 @@
 
 ### 빌드 방식과 SDK 판정
 
-1. 고객 스크립트·CI의 `MSBuild.exe` 또는 `dotnet build` 명령을 가장 먼저 사용한다.
+1. C# 솔루션의 restore와 Rebuild는 같은 Visual Studio 설치본의 `MSBuild.exe`로 수행한다. CI의 `dotnet build`는 구성·대상 프레임워크의 근거일 뿐 솔루션 빌드 도구로 선택하지 않는다. 설치본이 여러 개이고 고객이 사용하는 경로를 확정할 수 없으면 후보를 제시하고 사용자 선택을 기다린다.
 2. SDK 형식이라는 이유만으로 `dotnet build`를 자동 선택하지 않는다. 두 방식이 모두 가능하면 고객 명령과 기존 빌드 로그를 모델이 해석한다.
 3. MSBuild는 고객 지정 경로, 사용자 지정 경로, `vswhere -all` 설치본 순으로 찾고 프로젝트 프레임워크와 필요한 SDK를 평가할 수 있는 설치본만 유지한다.
 4. `dotnet`은 프로젝트에 적용되는 `global.json`의 version, rollForward, allowPrerelease와 설치된 SDK를 대조한다.
@@ -42,15 +47,16 @@
 2. `disable` 뒤 선택한 모든 `.csproj`에서 위 설정과 `.cs_wrapper`가 제거됐는지 확인한다. 일부라도 남아 있으면 원본 빌드를 시작하지 않는다.
 3. Toolbox 설정이 없는 원본 상태에서 먼저 restore를 수행한 뒤 고객과 같은 clean/rebuild를 수행한다. restore와 빌드는 같은 실행 파일·작업 디렉터리·환경 초기화를 사용하되, restore는 모든 선언 프레임워크의 package assets를 준비하도록 빌드의 임의 `TargetFramework` 제한을 복사하지 않는다.
    - 자동 MSBuild 계획: `MSBuild.exe <sln-or-csproj> /t:Restore /p:Configuration=<구성> /v:minimal` 뒤 `MSBuild.exe <sln-or-csproj> /t:Rebuild ... /v:diag`
-   - 자동 dotnet 계획: `dotnet restore <sln-or-csproj> --verbosity minimal` 뒤 `dotnet build <sln-or-csproj> --no-restore --no-incremental --verbosity diagnostic`
+   - 개별 프로젝트의 자동 dotnet 계획: `dotnet restore <csproj> --verbosity minimal` 뒤 `dotnet build <csproj> --no-restore --no-incremental --verbosity diagnostic`. 솔루션에는 적용하지 않는다.
    - 고객이 구조화된 restore 명령을 제공하면 이를 우선한다. 이전 작업의 restore 없는 계획은 같은 실행 파일과 환경으로 표준 restore 명령을 보완해 재개한다.
-4. SDK 형식 또는 `PackageReference`를 쓰는 선택 프로젝트에서는 restore 종료 코드뿐 아니라 `obj/project.assets.json` 생성도 확인한다. `packages.config` 등 기존 형식 프로젝트는 restore 성공 로그를 증거로 남기되 assets 파일 부재만으로 실패 처리하지 않는다.
-5. MSBuild면 현재 작업의 진단 로그 또는 binlog를 새로 만들고, `dotnet`/고객 스크립트면 해당 빌드가 선택한 SDK, 평가된 Target Framework와 컴파일러 실행을 진단 출력에서 수집한다.
-6. 실제 C# 컴파일 명령, 응답 파일(RSP) 또는 MSBuild 컴파일 작업에서 `csc.exe`의 절대 경로를 추출한다. SDK가 컴파일러 서버나 프로세스 내부 컴파일러를 사용해 실행 파일이 직접 나타나지 않으면 MSBuild의 `CscToolPath`, SDK/Roslyn 도구 디렉터리와 현재 SDK를 함께 기록하고, 이 원본 빌드 증거의 관계를 모델이 해석해 경로를 확정한다.
+4. `.sln`은 선택한 `Configuration|Platform`의 `Build.0`이 있는 프로젝트를 검증 대상으로 삼고, `ActiveCfg`의 프로젝트별 구성을 적용한다. 각 프로젝트의 속성·`ProjectReference`는 해당 프로젝트를 Import하는 임시 probe 프로젝트로 평가하며(버전 무관, `/getProperty`/`/getItem` 불필요), `BuildReference=false`인 참조처럼 실제 빌드하지 않는 참조는 제외한다. Release에서 빌드를 제외한 테스트 프로젝트처럼 이번 빌드에 참여하지 않는 프로젝트의 assets 파일이나 CscHooker 호출은 요구하지 않는다. Toolbox가 설정하는 솔루션 전체 범위와 실제 빌드 검증 범위는 구분한다.
+5. SDK 형식 또는 `PackageReference`를 쓰는 실제 빌드 대상에서는 restore 종료 코드뿐 아니라 MSBuild가 평가한 `ProjectAssetsFile`의 생성도 확인한다. 기본값은 `obj/project.assets.json`이지만 고객이 경로를 바꿀 수 있으므로 고정 경로로 검사하지 않는다. `packages.config` 등 기존 형식 프로젝트는 restore 성공 로그를 증거로 남기되 assets 파일 부재만으로 실패 처리하지 않는다.
+6. MSBuild면 현재 작업의 진단 로그 또는 binlog를 새로 만들고, `dotnet`/고객 스크립트면 해당 빌드가 선택한 SDK, 평가된 Target Framework와 컴파일러 실행을 진단 출력에서 수집한다.
+7. 실제 C# 컴파일 명령, 응답 파일(RSP) 또는 MSBuild 컴파일 작업에서 `csc.exe`의 절대 경로를 추출한다. SDK가 컴파일러 서버나 프로세스 내부 컴파일러를 사용해 실행 파일이 직접 나타나지 않으면 MSBuild의 `CscToolPath`, SDK/Roslyn 도구 디렉터리와 현재 SDK를 함께 기록하고, 이 원본 빌드 증거의 관계를 모델이 해석해 경로를 확정한다.
    - 관찰 결과는 `PROCESS_EXE`, `DOTNET_CSC_DLL`, `COMPILER_SERVER`, `IN_PROCESS` 중 하나로 구분한다.
    - Toolbox 입력에 필요한 `csc.exe`가 로그에서 하나로 확정되지 않으면 후보와 컴파일러 실행 방식을 근거로 모델이 선택하며, 근거 없이 PATH의 `csc.exe`를 사용하지 않는다.
-7. `where csc`, PATH, 기존 `.csproj`의 `OrgCscPath`, Toolbox 기본값만으로 실제 컴파일러를 확정하지 않는다.
-8. restore 또는 원본 빌드가 실패하거나 실제 컴파일러를 확정할 수 없으면 Toolbox 설정을 적용하지 않는다.
+8. `where csc`, PATH, 기존 `.csproj`의 `OrgCscPath`, Toolbox 기본값만으로 실제 컴파일러를 확정하지 않는다.
+9. restore 또는 원본 빌드가 실패하거나 실제 컴파일러를 확정할 수 없으면 Toolbox 설정을 적용하지 않는다.
 
 ### 원본 빌드 중 예외 처리
 
@@ -118,25 +124,12 @@ cover-toolbox-cli.exe disable <solution-or-project>
 
 고객 `.csproj`의 커버리지 설정 변경과 복구는 Toolbox CLI만 수행한다. 실패하면 `disable`로 원본 빌드 설정을 복구한다. Toolbox 공통 설정인 `csharp-config.json`은 커버리지 빌드 성공 여부와 관계없이 실행기가 복구하며, [적용과 복구 절차](#적용과-복구-절차)의 외부 변경 확인 규칙을 따른다.
 
-## 6. 커버리지 빌드와 검증
+## 6. 커버리지 빌드
 
-1. Toolbox 설정 후 원본과 같은 작업 디렉터리·환경·구성·Target Framework 범위로 clean/build를 수행한다. COVER Toolbox의 래퍼 설정은 package restore 입력을 추가하지 않으므로 원본 restore 결과를 재사용하며 매번 restore를 반복하지 않는다.
-
-   원본 `.sln`/`.csproj`의 절대 경로를 그대로 사용하고, 솔루션을 `D:\cover-csharp-*` 같은 별칭 경로로 복제하거나 `MSBuildProjectDirectory`가 달라지는 작업별 복제 저장소를 만들지 않는다.
-2. MSBuild 진단 로그, `${CODESCROLL_TM_INSTALL_PATH}/logs/CoverVcxTagger.log`, `${CODESCROLL_TM_INSTALL_PATH}/logs/csharp`에서 다음을 확인한다.
-   - `.cs_wrapper/<guid>.cmd` 실행
-   - `QualityScroll.Cover.CscHooker.exe` 실행
-   - `OrgCscPath`의 실제 `csc.exe` 실행
-   - CscHooker의 실제 계측 처리
-   - 선택 프로젝트마다 해당 `.cs_wrapper/<guid>.cmd` 호출과 `OrgCscPath`의 원본 `csc.exe` 설정이 확인된다.
-   - `includedfile: 0` 또는 `excludedfile` 자체는 실패로 처리하지 않는다. 제외 사유와 별개로 CscHooker 호출, 원본 컴파일 성공, 동일 경로 산출물 갱신이 확인되면 커버리지 빌드는 성공으로 판정한다.
-3. 원본 `csc.exe`가 CscHooker를 우회해 직접 실행된 프로젝트가 있으면 실패로 처리한다.
-4. 원본 진단 로그에서 관찰한 어셈블리의 절대 경로를 `originalOutputPaths`로 기록하고, `BaseOutputPath`, `OutputPath`, `OutDir`, `IntermediateOutputPath` 및 Target Framework별 `TargetPath`를 커버리지 빌드에서도 그대로 유지한다.
-
-   Toolbox 설정은 컴파일러 래퍼만 바꿔야 하며 출력 경로를 바꾸는 속성을 추가하지 않는다.
-5. `${SKILL_ROOT}/scripts/cover_build_executor.py verify-output-paths --original-artifact <원본 경로> --coverage-artifact <커버리지 경로>`를 사용해 경로를 비교한다. `sameAsOriginal=true`가 아니면 `COVERAGE_OUTPUT_PATH_CHANGED`로 중단한다.
-
-   비교 결과(`originalOutputPaths`, `coverageOutputPaths`, `missingOriginalPaths`, `unexpectedCoveragePaths`)를 커버리지 단계 JSON에 남긴다.
+1. Toolbox 설정 검사 후 원본과 같은 실행 파일·작업 디렉터리·구성·Platform·Target Framework 범위로 커버리지 빌드를 수행한다.
+2. 빌드 명령의 종료 코드를 기록한다. CscHooker 호출이나 `includedfile`·`excludedfile` 통계를 별도로 검사하지 않는다.
+3. 원본 진단 로그에서 관찰한 어셈블리 경로와 `BaseOutputPath`, `OutputPath`, `OutDir`, `IntermediateOutputPath`, Target Framework별 `TargetPath`를 계획에 보존한다. Toolbox는 컴파일러 연결만 바꾸며 출력 경로를 바꾸는 속성을 추가하지 않는다.
+4. 빌드 후 산출물 갱신·경로 비교를 성공 조건으로 요구하지 않는다. 실패·중단 시 Toolbox를 통한 복구 절차는 유지한다.
 
 ## 7. 측정 실행
 
@@ -144,15 +137,7 @@ cover-toolbox-cli.exe disable <solution-or-project>
 
 ## 성공 판정
 
-다음이 모두 참일 때 C# 커버리지 빌드 성공으로 판정한다.
-
-- 원본 빌드와 실제 `csc.exe`를 확인했다.
-- Toolbox CLI가 선택한 모든 `.csproj`에 설정을 적용했다.
-- CscHooker가 실제 컴파일을 처리하고 원본 `csc.exe`를 호출했다.
-- 어셈블리 산출물이 이번 작업에서 새로 생성 또는 변경됐다.
-- 어셈블리 산출물의 절대 경로가 원본과 완전히 같다(`sameAsOriginal=true`).
-
-측정 데이터 성공은 별도 판정으로 두고 실제 실행과 데이터 갱신까지 확인한다.
+커버리지 빌드 명령의 종료 코드가 0이면 성공, 0이 아니면 실패로 판정한다. 원본 빌드·컴파일러 확인과 Toolbox 설정 검사는 실행 전 준비 절차로 유지한다. 재사용 설정 적용 결과와 측정 데이터 수집 결과는 빌드 결과와 별도로 보고한다.
 
 ## 실행 시간 최적화
 
@@ -161,4 +146,4 @@ cover-toolbox-cli.exe disable <solution-or-project>
 - 원본 진단 로그/binlog 한 번에서 평가된 Target Framework, 실제 `csc.exe`, 어셈블리 출력 경로를 함께 추출한다. 프레임워크 확인과 컴파일러 확인을 위해 원본 빌드를 반복하지 않는다.
 - 고객 MSBuild 병렬 설정이 없으면 CPU 기반 `/m:<N>`(최대 8)을 사용한다. 고객 명령의 명시값은 보존한다.
 - Access Key와 현재 Agent의 macAddress 조회 결과, C# 빌드 서비스 준비 결과는 같은 실행기 프로세스와 작업 안에서 재사용한다. Toolbox 적용 전후에 Agent 전체 목록을 조회하지 않는다.
-- Toolbox enable 결과와 CscHooker 실제 처리 로그는 해당 작업의 단계 JSON에 한 번 기록하고 후속 산출물 검증에서 재사용한다.
+- Toolbox enable 결과와 커버리지 빌드 명령의 종료 코드·로그 경로를 해당 작업의 단계 JSON에 기록한다. 탐침 처리 통계나 후속 산출물 검증을 위해 다시 파싱하지 않는다.

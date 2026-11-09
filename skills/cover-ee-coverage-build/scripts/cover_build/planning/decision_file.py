@@ -142,6 +142,8 @@ def create_decision(
             raise errors.ExecutorError("INVALID_WORKFLOW_DECISION", f"Decision key was provided more than once: {key}")
         if key not in allowed:
             raise errors.ExecutorError("INVALID_WORKFLOW_DECISION", f"Unknown decision key: {key}", sorted(allowed))
+        if key in {"wrapperMappingChangeApproval", "archivePolicyApproval"} and owner != "USER":
+            raise errors.ExecutorError("INVALID_WORKFLOW_DECISION", "Mapping changes require an explicit USER decision")
         _validate_choice(key, value, allowed[key])
         resolved[key] = value
 

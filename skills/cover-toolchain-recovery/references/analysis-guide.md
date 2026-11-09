@@ -2,13 +2,13 @@
 
 핵심은 오류 이름에 맞는 설정이 아니라 **원래 컴파일 환경과 PA가 해석한 환경의 차이**를 찾는 것이다. 과거 성공 사례는 조사 지점일 뿐 현재 사례의 정답이 아니다.
 
-이 문서는 진단 순서를 안내한다. 옵션을 선택할 때는 로컬 참고서의 관련 절만 읽는다. Notion 없이 사용할 수 있으며 원문 링크는 [출처와 적용 범위](guide-sources.md)에 기록한다.
+이 문서는 진단 순서를 안내한다. 옵션을 선택할 때는 로컬 참고서의 관련 절만 읽는다. 사내 원문 없이 사용할 수 있으며 원문 출처는 [출처와 적용 범위](guide-sources.md)에 기록한다.
 
 | 확인할 차이 | 필요한 참고 절 |
 | --- | --- |
 | GCC·Clang·MSVC 종류와 버전 | [컴파일러 설정](pa-options.md#compiler) |
 | C/C++ 모드, 언어 표준, Microsoft 확장 | [언어 설정](pa-options.md#language) |
-| 실행 PC와 대상 CPU·운영체제, 타입 크기 | [target](pa-options.md#target), [타입 설정](pa-options.md#types) |
+| 빌드 PC와 대상 CPU·운영체제, 타입 크기 | [target](pa-options.md#target), [타입 설정](pa-options.md#types) |
 | 선언·매크로·preinclude 누락 | [전처리와 선언](pa-options.md#declarations) |
 | 원본 바이트와 문자 인코딩 | [인코딩](pa-options.md#encoding) |
 | 코드 무시·치환, 진단 수준 변경 | [수동 검토 옵션](pa-options.md#manual-review) |
@@ -32,19 +32,19 @@
 
 ## 2. 설정으로 표현해야 할 실제 환경
 
-다음은 설정 선택 기준이다. 문법과 문서상 지원 시점은 [PA 옵션 참고서](pa-options.md)에, 현재 배포본의 적용·성공 여부는 복사본 PA 실행으로 확인한다.
+다음은 설정 선택 기준이다. 문법과 문서상 지원 시점은 [PA 옵션 참고서](pa-options.md)에, 서버 tmpa 버전의 적용·성공 여부는 tmpa-run API 결과로 확인한다.
 
 | 구분 | 선택 근거와 주의점 |
 | --- | --- |
-| 실행 PC와 컴파일 대상 | `tmpa … win …` / `linux`는 PA를 실행하는 PC. `.conf`의 `target`은 원본 소스를 컴파일하려는 환경. Windows PC에서 Linux 대상 코드를 분석해도 둘을 같은 값으로 맞추지 않음. |
+| 빌드 PC와 컴파일 대상 | tmpa-run의 `platform`(win/linux)은 소스를 빌드한 PC. `.conf`의 `target`은 원본 소스를 컴파일하려는 환경. Windows PC에서 Linux 대상 코드를 분석해도 둘을 같은 값으로 맞추지 않음. |
 | 컴파일러 종류·버전 | GCC는 `gnu_version`, Clang은 `clang_version`, MSVC는 `microsoft_version`. GCC/Clang의 `x.y.z`는 `x*10000+y*100+z`. MSVC는 실제 `cl` 버전에 맞는 값 사용. 서로 다른 계열의 버전 옵션을 근거 없이 추가하지 않음. |
 | 언어·표준 | 원래 명령의 `-std`, `/std`, C/C++ 선택을 먼저 확인. 지정이 없으면 해당 컴파일러 버전의 기본값 확인. MSVC 계열의 `ms_c++*` / `ms_c*`와 일반 `c++*` / `c*`를 구분. 오류를 없애려 최신 표준으로 임의 상향하지 않음. |
 | 대상·타입 크기 | 실제 CPU, 비트 수, 운영체제에 맞는 `target`부터 선택. ABI는 타입 크기와 호출 방식을 맞추는 약속. `long`, 포인터, `size_t`의 크기·기반 타입을 실제 선언과 비교. |
-| 타입 덮어쓰기 | `target`과 별도 타입 크기 옵션의 적용 순서를 사용할 PA 배포본에서 확인. `cs_long_size` 등의 크기 옵션이 `target`의 기본값을 덮어쓰는지 실제 설정과 분석 결과로 확인. |
+| 타입 덮어쓰기 | `target`과 별도 타입 크기 옵션의 적용 순서를 서버의 tmpa 버전에서 확인. `cs_long_size` 등의 크기 옵션이 `target`의 기본값을 덮어쓰는지 실제 설정과 분석 결과로 확인. |
 | 특수 타입 | `cs_size_t_kind`, `cs_set_type_size`, `cs_char_bit`는 컴파일러 타입 정의·대상 근거가 있을 때만 사용. `size_t` 오류라는 이유만으로 `int`를 지정하지 않음. `long_long` 등 옵션 문법과 지원 버전도 확인. |
 | Microsoft 확장 | Clang 등의 `ms_compatibility` / `ms_extensions`는 MSVC 버전 에뮬레이션과 같은 설정이 아님. 실제 툴체인이 사용하는 확장 문법에 한정. |
 
-ARM용 `linux_armv7` / `linux_aarch64`, RISC-V용 `linux_riscv32` / `linux_riscv64`의 지원 시점과 타입 기본값은 [target 참고](pa-options.md#target)에서 확인한다. 현재 배포본의 지원 여부는 실제 실행 결과와 구분한다.
+ARM용 `linux_armv7` / `linux_aarch64`, RISC-V용 `linux_riscv32` / `linux_riscv64`의 지원 시점과 타입 기본값은 [target 참고](pa-options.md#target)에서 확인한다. 문서의 지원 시점과 현재 서버 tmpa의 실행 결과를 구분한다.
 
 ### 전처리·선언·인코딩
 
@@ -71,7 +71,7 @@ ARM용 `linux_armv7` / `linux_aarch64`, RISC-V용 `linux_riscv32` / `linux_riscv
 
 | 분류 | 다음 행동 |
 | --- | --- |
-| 설정 불일치 | 현재 증거로 설명되는 설정 후보를 만들고 별도 검증 폴더의 복사본에서 시험. |
+| 설정 불일치 | 현재 증거로 설명되는 설정 후보를 만들고 서버 tmpa-run API로 검증. |
 | 소스 수정 필요 | 원본 컴파일러에서도 같은 조건으로 실패하는지 확인. 실제 소스 결함이면 수정 필요 위치·이유를 안내하고 이 스킬은 원본 소스를 변경하지 않음. |
 | 자료 부족 | 컴파일 명령, 버전, 활성 설정 등 빠진 근거를 지정. 확인 전에는 후보를 확정하지 않음. |
 | 실행 환경 문제 | PA/라이브러리/라이선스 누락, 권한, DB 호환 문제, 시간 초과 등은 설정 후보 실패와 구분. 원인 확인 전 다른 문법 옵션을 계속 시도하지 않음. |
@@ -91,19 +91,20 @@ ARM용 `linux_armv7` / `linux_aarch64`, RISC-V용 `linux_riscv32` / `linux_riscv
 
 기존 설정에 이런 옵션이 있으면 [수동 검토 옵션](pa-options.md#manual-review)에서 의미와 검토 조건을 확인한다. 문서의 삭제 예제는 문법 설명이며, 해당 호출을 안전하게 삭제해도 된다는 근거가 아니다.
 
-## 5. 동봉된 tmpa로 검증 연결
+## 5. 서버 tmpa로 검증 연결
 
-스킬과 함께 배포한 `${SKILL_ROOT}/assets/tmpa/`의 실행 파일을 기본으로 사용한다. 서버에서 tmpa를 받거나 별도 PA 경로를 요구하지 않는다. 파일이 없거나 사용할 수 없으면 진단·변경안 안내와 배포 파일 점검까지만 하고 PA 검증·서버 반영은 하지 않는다. 경로 선택은 [PA 실행 계약](pa-runtime.md)을 따른다.
+[PA 실행 계약](server-execution.md)에 따라 후보 전체 설정을 서버에 보낸다.
 
-- 실행 파일에 필요한 라이브러리·설정·include/probe 자원이 같은 배포본에 있는지 확인한다. 실행 환경과 DB 형식의 호환성을 확인하고 다른 배포의 파일을 섞지 않는다.
-- 원본 ZIP·소스·전처리 자료·DB·설정은 보존. 검증 폴더의 복사본에서만 설정·DB·INI 경로를 바꾸고, 입력·출력이 검증 폴더 밖으로 쓰이지 않는지 확인한다.
-- 정확한 키는 **`Compiler.confFile`**이며 `cofFile`이 아니다. DB에서 해당 컴파일러 행을 식별해 복사한 `.conf`를 가리키게 한다. 테이블·행 연결이 불명확하면 전체 행을 갱신하지 않는다.
-- 실행 형태는 `tmpa project.db global.db win|linux pa.ini`. 실제 실행 파일·인자·작업 폴더·INI·환경과 새 실행 시작 시각을 기록한다. `win|linux`는 선택지 표기이지 그대로 넘기는 문자열이 아니다.
-- 종료 코드 0 외에도 대상 파일의 새 처리, 수정 설정 적용, 최초 오류 해소, 치명적·내부 오류 없는 완료를 확인한다. 이전 산출물은 성공 증거가 아니다.
-- 같은 컴파일러의 다른 분석 단위가 제공됐다면 함께 확인해 회귀를 찾는다. PA 단계 성공, 서버 반영, Agent 설정 적용, 원래 빌드, `.cvd` 수집은 별도 결과다.
+- 원본 ZIP·소스·전처리 자료·DB·설정은 보존한다. 로컬 복사본은 진단과 변경 비교에 사용하며 서버가 실행용 경로를 처리한다.
+- DB의 정확한 설정 키는 `Compiler.confFile`이며 `cofFile`이 아니다. 해당 행의 `idCompiler`와 후보 설정을 요청에 연결한다.
+- `platform`은 빌드 PC의 OS다. 서버 실행 환경, `.conf`의 컴파일 대상과 구분한다.
+- 서버 SUCCEEDED만 PA 검증 성공으로 기록한다. 성공 산출물은 API에서 받지 못하므로 로컬 파일·DB 확인을 했다고 쓰지 않는다.
+- 실패·시간 초과 ZIP의 console.log, parse/*.elog, full log는 이번 서버 실행 자료다. TIMEOUT DB는 불완전할 수 있다.
+- `tmpaRevision`과 원래 실패 로그의 REV를 대조한다. 버전 불일치·미확인을 기록한다.
+- PA 성공, 툴체인·Wrapper 반영, 원래 빌드, `.cvd` 수집은 별도 결과다.
 
 ## 출처와 적용 범위
 
 원문 조회일, 문서상 지원 버전, 기존 예제의 불일치와 미검증 범위는 [출처와 적용 범위](guide-sources.md)에 기록한다. 필요한 설명은 이 문서와 [PA 옵션 참고서](pa-options.md)에 포함하며, 출처를 열지 못한다는 이유만으로 진단을 중단하거나 사용자에게 Notion 접근을 요구하지 않는다.
 
-스킬에 동봉된 tmpa 사용, 원본 보존, 검증 후 단계 구분은 이 스킬의 실행 범위다. 서버 API 계약은 별도 [서버 API 문서](server-api.md)를 따른다.
+COVER 서버의 tmpa 사용, 원본 보존, 검증 후 단계 구분은 이 스킬의 실행 범위다. 서버 API 계약은 별도 [서버 API 문서](server-api.md)를 따른다.

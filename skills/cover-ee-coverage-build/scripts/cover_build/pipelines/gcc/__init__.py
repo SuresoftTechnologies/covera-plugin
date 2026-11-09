@@ -2,56 +2,67 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import argparse
+import copy
+import os
 from pathlib import Path
 from typing import Any
 
 
 from cover_build.pipelines.gcc import selection as gcc
 from cover_build.core import state_store
+from cover_build.core.job_evidence import with_output_tracking
 from cover_build.core.errors import WorkflowWaiting
 from cover_build.planning import build_plan
-from cover_build.pipelines.runtime import PipelineRuntime
+from cover_build.common.jobs import argument
+from cover_build.planning.resolution import fallback_source, resolve_fallback_artifact
+from cover_build.core.job_evidence import finalize_environment_survey_plan, job_project_input_fingerprint, job_work_path, record, record_coverage_injection_evidence, write_original_build_evidence
+from cover_build.services.gcc_coverage import probe_windows_gcc_ar_wrapper, selected_cover_config
+from cover_build.common.fileio import write_json
 from cover_build.services import agent_open_api as agent
 from cover_build.services import gcc_coverage
 from cover_build.pipelines.gcc import original as gcc_original
+from cover_build.planning import toolchain_review
 from cover_build.services import glue_compiler
 from cover_build.common import processes as native_common
 from cover_build.services import project_backup
 from cover_build.common import envelopes
 from cover_build.common import fileio
-from cover_build.common import gcc_tools
+from cover_build.planning import gcc_tools
+from cover_build.planning import cmake_msbuild
 from cover_build.common import pathutil
 from cover_build.common import processes
-from cover_build.common import toolchains
+from cover_build.services import toolchains
 from cover_build.core import errors
+from cover_build.services import build_execution
 
 
-def run(
-    job: dict[str, Any],
-    discovery: dict[str, Any],
-    build_system: str,
-    choices: dict[str, Any],
-    stages: list[dict[str, Any]],
-    args: argparse.Namespace,
-    build_evidence: dict[str, Any] | None = None,
-    ensure_authentication: Any | None = None,
-    *,
-    runtime: PipelineRuntime,
-) -> dict[str, Any]:
-    argument = runtime.argument
-    fallback_source = runtime.fallback_source
-    finalize_environment_survey_plan = runtime.finalize_environment_survey_plan
-    job_project_input_fingerprint = runtime.job_project_input_fingerprint
-    job_work_path = runtime.job_work_path
-    probe_windows_gcc_ar_wrapper = runtime.probe_windows_gcc_ar_wrapper
-    record = runtime.record
-    record_coverage_injection_evidence = runtime.record_coverage_injection_evidence
-    resolve_fallback_artifact = runtime.resolve_fallback_artifact
-    selected_cover_config = runtime.selected_cover_config
-    write_json = runtime.write_json
-    write_original_build_evidence = runtime.write_original_build_evidence
 
+def preserve_original_environment(plan: dict[str, Any], original_plan: dict[str, Any]) -> dict[str, Any]:
+    """Keep the validated build environment; coverage-specific variables take precedence."""
+    result = copy.deepcopy(plan)
+    originals = original_plan["commands"]
+    build = originals.get("rebuild", originals.get("build", {}))
+    for phase, command in result["commands"].items():
+        source = originals.get(phase, build)
+        if source.get("environmentMode") == "replace":
+            command["environmentMode"] = "replace"
+            command["environment"] = dict(source.get("environment", {}))
+        merged = dict(source.get("environmentDelta", {}))
+        for key, value in command.get("environmentDelta", {}).items():
+            if os.name == "nt":
+                for previous in list(merged):
+                    if previous.casefold() == key.casefold():
+                        del merged[previous]
+            merged[key] = value
+        command["environmentDelta"] = merged
+    return fileio.add_integrity(result)
+
+
+
+def _prepare_original_plan(job, discovery, build_system, choices, stages, args, build_evidence):
     build_evidence = build_evidence or build_plan.collect_build_evidence(job, discovery)
     raw_original_plan = choices.get("originalBuildPlan")
     selected_references_path = job_work_path(job, "temporary", "selected-build-references.json")
@@ -60,7 +71,11 @@ def run(
         for script in build_evidence.get("buildScripts", [])
         if script.get("likelyBuildEntry") and isinstance(script.get("path"), str)
     ]
-    if raw_original_plan is None and likely_build_scripts:
+    # Resolve an available native entry before asking the model for its plan.
+    # Script-only projects may generate that entry, so retain their early handoff.
+    native_entries = discovery["data"].get("gccBuildDrivers", {}).get(build_system, [])
+    if (raw_original_plan is None and likely_build_scripts
+            and not choices.get("gccBuildEntry") and not native_entries):
         selected_references = build_plan.collect_selected_references(job, likely_build_scripts)
         write_json(selected_references_path, selected_references)
         record(
@@ -108,7 +123,12 @@ def run(
         original_plan=model_plan,
         explicit_configuration=getattr(args, "gcc_configuration", None),
     )
-    selected_references = build_plan.collect_selected_references(job, [selection["entry"]])
+    selected_references = build_plan.collect_selected_references(
+        job, list(dict.fromkeys([selection["entry"], *likely_build_scripts]))
+    )
+    # Carry the resolved route into the model handoff; scripts are evidence,
+    # not permission to replace the selected toolchain or build entry.
+    selected_references["selectedBuild"] = selection
     write_json(selected_references_path, selected_references)
     record(
         job,
@@ -127,7 +147,7 @@ def run(
         evidence_path = Path(job["directories"]["temporary"]) / "build-evidence.json"
         raise WorkflowWaiting(
             "ORIGINAL_BUILD_PLAN_REQUIRED",
-            "Customer scripts, CMake presets, or Make tool injection require semantic interpretation before the original build can run",
+            "Interpret scripts, presets, and prerequisites for selectedBuild in the references evidence; preserve the selected entry and toolchain unless conflicting evidence requires an explicit revised decision",
             {
                 "originalBuildPlan": [],
                 "originalBuildCommandSource": ["MODEL_INFERRED"],
@@ -149,7 +169,6 @@ def run(
     record(job, stages, 3, "select-gcc-driver", envelopes.envelope("SELECTING_GCC_BUILD_DRIVER", "SUCCEEDED", selection))
     build_tool = model_plan["buildTool"] if model_plan is not None else gcc.select_build_tool(selection["driver"], selection, choices, args.gcc_build_tool)
     configure_arguments = [
-        *selection["preservedConfigureArgs"],
         *((model_plan or {}).get("coverageInjection", {}).get("configureArguments", [])),
         *args.gcc_configure_arg,
     ]
@@ -159,7 +178,7 @@ def run(
         job,
         selection,
         build_tool,
-        configure_arguments,
+        selection["preservedConfigureArgs"],
         list(args.target),
         args.parallel,
         args.gcc_clean_target,
@@ -179,6 +198,7 @@ def run(
         revised_plan["targetTools"] = target_tool_paths
         revised_plan["evidence"] = [*original_plan["evidence"], "MODEL_SELECTED_TARGET_TOOLS"]
         original_plan = build_plan.validate_original_build_plan(job, revised_plan, selection["driver"])
+    original_plan = with_output_tracking(original_plan, choices)
     original_plan_path = Path(job["directories"]["temporary"]) / "original-build-plan.json"
     write_json(original_plan_path, original_plan)
     record(
@@ -202,19 +222,58 @@ def run(
         ),
     )
     finalize_environment_survey_plan(job, stages, original_plan)
+    return build_evidence, selection, selected_references, build_tool, configure_arguments, original_plan
+
+
+
+def _legacy_original_checkpoint_inputs(job, inputs, original_plan):
+    candidates = [{**inputs, "plan": original_plan}]
+    if not job.get("jobDirectory"):
+        return tuple(candidates)
+    # Old automatic plans duplicated original configure options in the
+    # coverage-only field. Recover that old digest without changing commands.
+    for path in (Path(job["jobDirectory"]) / "events").glob("*-*-execute-original-build.json"):
+        try:
+            event = fileio.load_json(path)
+            if not isinstance(event, dict):
+                continue
+            result = event.get("result")
+            if event.get("jobId") != job["jobId"] or not isinstance(result, dict) or result.get("status") != "SUCCEEDED":
+                continue
+            saved = result["data"]["originalBuildPlan"]
+            if not isinstance(saved, dict):
+                continue
+            fileio.verify_integrity(saved)
+            normalized = {key: value for key, value in saved.items() if key != "integrity"}
+            normalized["coverageInjection"] = {**saved["coverageInjection"], "configureArguments": []}
+            if normalized == inputs["plan"]:
+                candidate = {**inputs, "plan": saved}
+                if candidate not in candidates:
+                    candidates.append(candidate)
+        except (OSError, ValueError, KeyError, TypeError, errors.ExecutorError):
+            continue
+    return tuple(candidates)
+
+
+def _build_and_review_original(job, choices, stages, args, selection, selected_references, build_tool, configure_arguments, original_plan):
     native_common.require_execution(args.execute)
+    # Coverage-only recovery must not invalidate a successful original build.
+    original_execution = {key: value for key, value in original_plan.items() if key != "integrity"}
+    original_execution["coverageInjection"] = {**original_plan["coverageInjection"], "configureArguments": []}
+    checkpoint_inputs = {
+        "toolchainReviewVersion": 1,
+        "plan": original_execution,
+        "selection": selection,
+        "selectedReferencesFingerprint": build_plan.selected_references_fingerprint(selected_references),
+        "projectInputFingerprint": job_project_input_fingerprint(job),
+    }
     native_build = state_store.run_checkpointed(
         job,
         stages,
         record,
         5,
         "execute-original-build",
-        {
-            "plan": original_plan,
-            "selection": selection,
-            "selectedReferencesFingerprint": build_plan.selected_references_fingerprint(selected_references),
-            "projectInputFingerprint": job_project_input_fingerprint(job),
-        },
+        checkpoint_inputs,
         lambda: gcc_original.execute_gcc(
             job,
             selection,
@@ -225,6 +284,9 @@ def run(
             args.gcc_clean_target,
             original_plan=original_plan,
         ),
+        # Match the old digest exactly; do not relax source, command, selection
+        # or reference checks. Reuse is then recorded with the current digest.
+        compatible_inputs=_legacy_original_checkpoint_inputs(job, checkpoint_inputs, original_plan),
     )
     write_original_build_evidence(job, stages, native_build)
     if selection["driver"] == "CMAKE":
@@ -232,7 +294,9 @@ def run(
             raise errors.ExecutorError("COVERAGE_OUTPUT_PATH_CHANGED", "CMake selection differs from the observed original build directory")
         gcc.save_cmake_selection(job, selection)
         selection["generator"] = native_build["data"].get("generator") or selection.get("generator")
-    toolchain = native_build["data"]["toolchain"]
+    toolchain = toolchain_review.resolve(job, native_build, choices.get("originalToolchainDecision"))
+    native_build["data"]["toolchain"] = toolchain
+    write_original_build_evidence(job, stages, native_build)
     record(
         job,
         stages,
@@ -284,8 +348,16 @@ def run(
             },
         ),
     )
+    return toolchain, artifacts, wrapper_mapping, original_prefix
+
+
+
+def _prepare_agent_and_runtime(job, choices, stages, args, selection, original_plan, toolchain, wrapper_mapping, original_prefix, ensure_authentication):
     if ensure_authentication is not None:
         ensure_authentication()
+    same_name_wrappers = selection["driver"] == "CMAKE" and cmake_msbuild.is_visual_studio(selection.get("generator"))
+    if same_name_wrappers:
+        wrapper_mapping = {name.lower(): path for name, path in wrapper_mapping.items()}
     descriptor = agent.ensure_wrapper_mappings(
         job,
         stages,
@@ -293,6 +365,9 @@ def run(
         args.allow_agent_start,
         required_wrappers=set(wrapper_mapping),
         real_tools_override=wrapper_mapping,
+        allow_wrapper_aliases=not same_name_wrappers,
+        mapping_change_approval=choices.get("wrapperMappingChangeApproval") if same_name_wrappers else None,
+        archive_policy_approval=choices.get("archivePolicyApproval"),
         cover_user_name=choices.get("coverUserName"),
         toolchain_selection=choices.get("toolChainInfoSelection"),
         original_environment=gcc_original._command_environment(
@@ -351,13 +426,37 @@ def run(
             )
         ),
     )
+    return descriptor, wrappers, glue_runtime, role_real_tools, coverage_required_roles
+
+
+
+@dataclass(frozen=True, kw_only=True)
+class GccCoveragePlan:
+    """명령행 주입 계획과 프로젝트 파일 대체 처리에 필요한 계획값."""
+    ar_probe: Any
+    common: Any
+    coverage_clean_target: Any
+    coverage_force_rebuild: Any
+    coverage_targets: Any
+    plan: Any
+    plan_path: Any
+
+
+def _prepare_coverage_plan(
+    *, args, artifacts, build_tool, configure_arguments, coverage_required_roles, descriptor, glue_runtime, job, original_plan, role_real_tools, selection, stages, wrappers, option_recovery=None
+) -> GccCoveragePlan:
+    ar_probe = None
     plan_path = Path(job["directories"]["temporary"]) / "build-plan.json"
-    coverage_targets = list(args.target) or list(original_plan.get("targets") or [])
+    coverage_targets = list(original_plan.get("targets") or [])
     coverage_force_rebuild = bool(original_plan["coverageInjection"].get("forceRebuild", False))
     coverage_clean_target = original_plan["coverageInjection"].get("cleanTarget")
     if not coverage_force_rebuild and not coverage_clean_target:
         coverage_clean_target = args.gcc_clean_target
     common = {
+        "job_context": job,
+        "option_recovery": option_recovery,
+        "verified_coverage_options": getattr(args, "verified_coverage_options", None),
+        "original_plan": original_plan,
         "project_root": job["projectRoot"],
         "c_compiler": wrappers.get("c_compiler"),
         "cxx_compiler": wrappers.get("cxx_compiler"),
@@ -419,7 +518,44 @@ def run(
             "UNSUPPORTED_BUILD_SYSTEM",
             f"Unsupported GCC build driver: {selection['driver']}",
         )
+    plan["data"] = preserve_original_environment(plan["data"], original_plan)
+    fileio.atomic_write_json(plan_path, plan["data"])
     record(job, stages, 11, f"plan-{selection['driver'].lower()}", plan)
+    return GccCoveragePlan(
+        ar_probe=ar_probe,
+        common=common,
+        coverage_clean_target=coverage_clean_target,
+        coverage_force_rebuild=coverage_force_rebuild,
+        coverage_targets=coverage_targets,
+        plan=plan,
+        plan_path=plan_path,
+    )
+
+
+def _build_coverage(job, stages, args, selection, original_plan, artifacts, descriptor, wrappers, glue_runtime, role_real_tools, coverage_required_roles, build_tool, configure_arguments, selected_references, build_evidence, *, option_recovery=None):
+    prepared = _prepare_coverage_plan(
+        args=args,
+        artifacts=artifacts,
+        build_tool=build_tool,
+        configure_arguments=configure_arguments,
+        coverage_required_roles=coverage_required_roles,
+        descriptor=descriptor,
+        glue_runtime=glue_runtime,
+        job=job,
+        original_plan=original_plan,
+        role_real_tools=role_real_tools,
+        selection=selection,
+        stages=stages,
+        wrappers=wrappers,
+        option_recovery=option_recovery,
+    )
+    ar_probe = prepared.ar_probe
+    common = prepared.common
+    coverage_clean_target = prepared.coverage_clean_target
+    coverage_force_rebuild = prepared.coverage_force_rebuild
+    coverage_targets = prepared.coverage_targets
+    plan = prepared.plan
+    plan_path = prepared.plan_path
     injection_state: dict[str, Any] = {
         "sequence": ["COMMAND_LINE", "PROJECT_FILE_PATCH"],
         "commandLine": {"status": "RUNNING", "plan": str(plan_path)},
@@ -448,7 +584,7 @@ def run(
                     stages,
                     11,
                     "gcc-command-diagnostic",
-                    processes.execute_plan(
+                    build_execution.execute_plan(
                         argument(plan=str(plan_path), phase="preflight", log_dir=job["directories"]["logs"])
                     ),
                 )
@@ -476,8 +612,11 @@ def run(
         ]
         fallback_plan_path = Path(job["directories"]["temporary"]) / "build-plan-project-file-patch.json"
         if selection["driver"] == "CMAKE":
-            patch_targets = project_backup.cmake_patch_candidates(
-                Path(job["projectRoot"]), Path(selection["entry"]), reference_paths
+            patch_targets = (
+                [Path(selection["entry"])] if plan["data"].get("toolInjection") == "MSBUILD"
+                else project_backup.cmake_patch_candidates(
+                    Path(job["projectRoot"]), Path(selection["entry"]), reference_paths
+                )
             )
         else:
             script_paths = [
@@ -520,7 +659,9 @@ def run(
         )
         try:
             modified_files = (
-                patch.apply_cmake({role: str(path) for role, path in wrappers.items()})
+                patch.apply_cmake_msbuild({role: str(path) for role, path in wrappers.items()})
+                if plan["data"].get("toolInjection") == "MSBUILD"
+                else patch.apply_cmake({role: str(path) for role, path in wrappers.items()})
                 if selection["driver"] == "CMAKE"
                 else patch.apply_make(
                     {role: str(path) for role, path in wrappers.items()},
@@ -563,6 +704,7 @@ def run(
                         source=selection["sourceDirectory"],
                         preserve_source_spelling=False,
                         build=str(fallback_build_directory),
+                        msbuild_project_patch=plan["data"].get("toolInjection") == "MSBUILD",
                         generator=selection["generator"],
                         configuration=args.gcc_configuration or selection["configuration"],
                         configure_arg=configure_arguments,
@@ -630,19 +772,18 @@ def run(
     record_coverage_injection_evidence(
         job, stages, 16, "coverage-injection-result", injection_state
     )
-    command_names = (
-        ["configure", "rebuild"]
-        if selection["driver"] == "CMAKE"
-        else (["rebuild"] if "rebuild" in manual_plan["commands"] else ["clean", "build"])
-    )
+    command_names = [name for name in ("configure", "clean", "rebuild", "build")
+                     if name in manual_plan["commands"]]
     assets = [
         manual_plan["coverConfig"]
         for _ in [0]
         if manual_plan.get("coverConfig") and pathutil.path_within(manual_plan["coverConfig"], job["jobDirectory"])
     ]
+    if manual_plan.get("msbuildProps"):
+        assets.append(manual_plan["msbuildProps"])
     return {
         **build_result,
-        "coverageVerified": True,
+        "buildSucceeded": True,
         "_manualCoverage": {
             "buildSystem": selection["driver"],
             "commands": [manual_plan["commands"][name] for name in command_names],
@@ -658,3 +799,20 @@ def run(
             },
         },
     }
+
+
+def run(
+    job: dict[str, Any],
+    discovery: dict[str, Any],
+    build_system: str,
+    choices: dict[str, Any],
+    stages: list[dict[str, Any]],
+    args: argparse.Namespace,
+    build_evidence: dict[str, Any] | None = None,
+    ensure_authentication: Any | None = None,
+) -> dict[str, Any]:
+
+    build_evidence, selection, selected_references, build_tool, configure_arguments, original_plan = _prepare_original_plan(job, discovery, build_system, choices, stages, args, build_evidence)
+    toolchain, artifacts, wrapper_mapping, original_prefix = _build_and_review_original(job, choices, stages, args, selection, selected_references, build_tool, configure_arguments, original_plan)
+    descriptor, wrappers, glue_runtime, role_real_tools, coverage_required_roles = _prepare_agent_and_runtime(job, choices, stages, args, selection, original_plan, toolchain, wrapper_mapping, original_prefix, ensure_authentication)
+    return _build_coverage(job, stages, args, selection, original_plan, artifacts, descriptor, wrappers, glue_runtime, role_real_tools, coverage_required_roles, build_tool, configure_arguments, selected_references, build_evidence, option_recovery=choices.get("coverageOptionRecovery"))

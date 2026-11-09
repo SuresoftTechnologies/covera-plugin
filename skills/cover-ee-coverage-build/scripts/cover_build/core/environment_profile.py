@@ -218,7 +218,8 @@ def load(
             return None, "CHOICES_INVALID"
         _reject_sensitive(cached_choices)
         _reject_sensitive(requested_choices, "requestedChoices")
-        if _conflicts(cached_choices, requested_choices):
+        rebound_choices = _rebind_choices(cached_choices, job_id)
+        if _conflicts(rebound_choices, requested_choices):
             return None, "REQUEST_CHANGED"
         if profile.get("request") != request:
             return None, "REQUEST_CHANGED"
@@ -232,6 +233,6 @@ def load(
             for name in ("projectIndex", "managedEvidence", "discoveryData", "stm32CubeIDEDiscovery")
         ):
             return None, "EVIDENCE_INVALID"
-        return {**profile, "choices": _rebind_choices(cached_choices, job_id)}, "HIT"
+        return {**profile, "choices": rebound_choices}, "HIT"
     except (OSError, ValueError, errors.ExecutorError):
         return None, "PROFILE_INVALID"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +11,12 @@ from typing import Any
 from cover_build.pipelines.visual_studio import tools as visual_studio
 from cover_build.core.errors import WorkflowWaiting
 from cover_build.core import state_store
+from cover_build.core.job_evidence import with_output_tracking
 from cover_build.planning import build_plan, selection
-from cover_build.pipelines.runtime import PipelineRuntime
+from cover_build.common.jobs import argument
+from cover_build.planning.resolution import fallback_source, resolve_fallback_artifact
+from cover_build.core.job_evidence import finalize_environment_survey_plan, job_project_input_fingerprint, job_work_path, record, write_original_build_evidence
+from cover_build.common.fileio import write_json
 from cover_build.services import agent_open_api as agent
 from cover_build.pipelines.visual_studio import msbuild as msbuild_service
 from cover_build.common import processes as native_common
@@ -18,37 +24,34 @@ from cover_build.common import envelopes
 from cover_build.common import fileio
 from cover_build.common import pathutil
 from cover_build.common import processes
-from cover_build.common import toolchains
+from cover_build.services import toolchains
+from cover_build.planning import toolchain_review
 from cover_build.core import errors
 from cover_build.pipelines.visual_studio import planning as vs_planning
 
 
-def run(
-    job: dict[str, Any],
-    discovery: dict[str, Any],
-    choices: dict[str, Any],
-    stages: list[dict[str, Any]],
-    execute: bool,
-    allow_start: bool,
-    real_tool_overrides: list[tuple[str, Path]] | None = None,
-    build_evidence: dict[str, Any] | None = None,
-    explicit_artifacts: list[str] | None = None,
-    parallel: int | None = None,
-    ensure_authentication: Any | None = None,
-    *,
-    runtime: PipelineRuntime,
-) -> dict[str, Any]:
-    argument = runtime.argument
-    fallback_source = runtime.fallback_source
-    finalize_environment_survey_plan = runtime.finalize_environment_survey_plan
-    job_project_input_fingerprint = runtime.job_project_input_fingerprint
-    job_work_path = runtime.job_work_path
-    record = runtime.record
-    resolve_fallback_artifact = runtime.resolve_fallback_artifact
-    write_json = runtime.write_json
-    write_original_build_evidence = runtime.write_original_build_evidence
+@dataclass(frozen=True, kw_only=True)
+class VisualStudioOriginalPlan:
+    """선택한 솔루션 구성·MSBuild 환경과 원본 빌드 계획."""
+    configuration: Any
+    coverage_project_configurations: Any
+    entry: Any
+    env_path: Any
+    environment: Any
+    msbuild: Any
+    original_configuration: Any
+    original_plan: Any
+    original_platform: Any
+    original_project_configurations: Any
+    overlay: Any
+    platform: Any
+    selected_references: Any
+    selected_references_path: Any
 
-    parallel = parallel or processes.default_parallelism()
+
+def _prepare_original_plan(
+    *, choices, discovery, job, parallel, stages, build_evidence
+) -> VisualStudioOriginalPlan:
     build_evidence = build_evidence or build_plan.collect_build_evidence(job, discovery)
     raw_original_plan = choices.get("originalBuildPlan")
     planning_choices = dict(choices)
@@ -150,6 +153,7 @@ def run(
         environment_initialization={"method": "VSDEVCMD_CAPTURED", "scriptPath": str(vsdevcmd)},
         parallel=parallel,
     )
+    original_plan = with_output_tracking(original_plan, choices)
     original_plan_path = Path(job["directories"]["temporary"]) / "original-build-plan.json"
     write_json(original_plan_path, original_plan)
     record(
@@ -182,6 +186,61 @@ def run(
         ),
     )
     finalize_environment_survey_plan(job, stages, original_plan)
+    return VisualStudioOriginalPlan(
+        configuration=configuration,
+        coverage_project_configurations=coverage_project_configurations,
+        entry=entry,
+        env_path=env_path,
+        environment=environment,
+        msbuild=msbuild,
+        original_configuration=original_configuration,
+        original_plan=original_plan,
+        original_platform=original_platform,
+        original_project_configurations=original_project_configurations,
+        overlay=overlay,
+        platform=platform,
+        selected_references=selected_references,
+        selected_references_path=selected_references_path,
+    )
+
+
+def run(
+    job: dict[str, Any],
+    discovery: dict[str, Any],
+    choices: dict[str, Any],
+    stages: list[dict[str, Any]],
+    execute: bool,
+    allow_start: bool,
+    real_tool_overrides: list[tuple[str, Path]] | None = None,
+    build_evidence: dict[str, Any] | None = None,
+    explicit_artifacts: list[str] | None = None,
+    parallel: int | None = None,
+    ensure_authentication: Any | None = None,
+) -> dict[str, Any]:
+
+    parallel = parallel or processes.default_parallelism()
+    prepared = _prepare_original_plan(
+        choices=choices,
+        discovery=discovery,
+        job=job,
+        parallel=parallel,
+        stages=stages,
+        build_evidence=build_evidence,
+    )
+    configuration = prepared.configuration
+    coverage_project_configurations = prepared.coverage_project_configurations
+    entry = prepared.entry
+    env_path = prepared.env_path
+    environment = prepared.environment
+    msbuild = prepared.msbuild
+    original_configuration = prepared.original_configuration
+    original_plan = prepared.original_plan
+    original_platform = prepared.original_platform
+    original_project_configurations = prepared.original_project_configurations
+    overlay = prepared.overlay
+    platform = prepared.platform
+    selected_references = prepared.selected_references
+    selected_references_path = prepared.selected_references_path
     native_common.require_execution(execute)
     original_output_projects = [
         mapping
@@ -205,6 +264,7 @@ def run(
             "execute-original-build",
             {
                 "plan": original_plan,
+                "toolchainEvidenceVersion": 2,
                 "projectConfigurations": original_project_configurations,
                 "toolOverrides": [(name, str(path)) for name, path in (real_tool_overrides or [])],
                 "selectedReferencesFingerprint": build_plan.selected_references_fingerprint(selected_references),
@@ -241,8 +301,19 @@ def run(
             evidence=exc.evidence,
         ) from exc
     native_build = native_build_result
+    reviewed = toolchain_review.resolve(job, native_build, choices.get("originalToolchainDecision"))
+    # Adapt validated semantic roles to the existing MSVC wrapper contract.
+    names = {"c_compiler": "cl.exe", "cxx_compiler": "cl.exe", "linker": "link.exe", "ar": "lib.exe"}
+    tools, evidence = {}, {}
+    for role, path in reviewed["tools"].items():
+        name = names[role]
+        if name in tools and not pathutil.same_path(tools[name], path):
+            raise errors.ExecutorError("ORIGINAL_TOOLCHAIN_AMBIGUOUS", "Split targets using different MSVC compilers before mapping wrappers")
+        tools[name] = path
+        evidence[name] = reviewed["evidence"][role]
+    toolchain = {**reviewed, "tools": tools, "evidence": evidence}
+    native_build["data"]["toolchain"] = toolchain
     write_original_build_evidence(job, stages, native_build)
-    toolchain = native_build["data"]["toolchain"]
     record(
         job,
         stages,
@@ -264,6 +335,8 @@ def run(
         toolchain_selection=choices.get("toolChainInfoSelection"),
         original_environment=environment["data"]["environment"],
         allow_wrapper_aliases=False,
+        mapping_change_approval=choices.get("wrapperMappingChangeApproval"),
+        archive_policy_approval=choices.get("archivePolicyApproval"),
     )
     selected_mapping = descriptor.get("resolvedWrapperMappings")
     if selected_mapping:
@@ -304,7 +377,7 @@ def run(
             evidence=[str(selected_references_path)],
     )
     plan_path = Path(job["directories"]["temporary"]) / "build-plan.json"
-    plan = record(job, stages, 11, "plan-vs", vs_planning.plan_vs(argument(project=entry, project_root=job["projectRoot"], msbuild=str(msbuild), configuration=configuration, platform=platform, wrapper_dir=descriptor["toolchainProvisioning"]["wrapperDirectory"], overlay=str(overlay), environment=str(env_path), vc_targets_path=None, artifact=[str(artifact) for artifact in artifacts], required_wrapper=sorted(real_tools), real_tool=[f"{name}={path}" for name, path in real_tools.items()], timeout=3600, parallel=parallel, output=str(plan_path))))
+    plan = record(job, stages, 11, "plan-vs", vs_planning.plan_vs(argument(original_plan=original_plan, project=entry, project_root=job["projectRoot"], msbuild=str(msbuild), configuration=configuration, platform=platform, wrapper_dir=descriptor["toolchainProvisioning"]["wrapperDirectory"], overlay=str(overlay), environment=str(env_path), vc_targets_path=None, artifact=[str(artifact) for artifact in artifacts], required_wrapper=sorted(real_tools), real_tool=[f"{name}={path}" for name, path in real_tools.items()], timeout=3600, parallel=parallel, output=str(plan_path))))
     build_result = msbuild_service.execute_msbuild_plan(job, stages, record, plan_path, artifacts, execute)
     coverage_plan = fileio.load_json(plan_path)
 
@@ -313,10 +386,11 @@ def run(
 
     return {
         **build_result,
-        "coverageVerified": True,
+        "buildSucceeded": True,
         "_manualCoverage": {
             "buildSystem": "VISUAL_STUDIO",
-            "commands": [coverage_plan["commands"]["rebuild"]],
+            "commands": [coverage_plan["commands"][name] for name in ("clean", "rebuild")
+                         if name in coverage_plan["commands"]],
             "assets": [str(overlay)],
             "artifacts": [str(artifact) for artifact in artifacts],
             "verifyApplied": verify_applied,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -91,6 +92,13 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest().upper()
+
+
+def sha256_matches_file(path: Path, expected: Any) -> bool:
+    """Compare a strict hexadecimal SHA-256 value independently of letter case."""
+    if not isinstance(expected, str) or re.fullmatch(r"[0-9a-fA-F]{64}", expected) is None:
+        raise ValueError("SHA-256 must be exactly 64 hexadecimal characters")
+    return expected.upper() == sha256_file(path)
 
 
 def split_path_list(value: str) -> list[str]:

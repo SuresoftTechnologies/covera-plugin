@@ -1,15 +1,15 @@
 # 로컬 오류 자료로 시작하기
 
-PA 실행 파일은 `${SKILL_ROOT}/assets/tmpa/`에 배포한다. Windows는 `tmpa.exe`, Linux는 `tmpa`를 쓴다. 오류 자료만 확보하면 별도 PA 경로 없이 검증할 수 있으며, 서버 다운로드는 자료 수집에만 사용한다. 동봉 PA를 쓸 수 없으면 `GuidanceOnly`로 기록하고 배포 파일을 점검한다.
+로컬 ZIP·폴더는 보존 복사본에서 진단한다. tmpa 실행은 서버 API에서만 수행한다. 로컬 자료만 제공한 case에는 서버 Issue 출처가 없으므로 검증 전에 `start`/`collect`로 서버에서 새 case를 수집해야 한다.
 
 Python 3.11 이상과 표준 라이브러리만 사용한다. 아래 경로와 소스 이름은 사용 환경에 맞게 바꾼다. `--source`는 DB의 원래 `SourceFile.path` 값이다. 상대 소스명을 사용하면 `--project-root`에 실제 빌드 작업 폴더를 지정한다.
 
-ZIP·폴더가 없으면 [오류 자료 탐색](artifact-discovery.md)을 따른다. `start`의 `--artifacts`를 생략하면 소스 전체 경로와 HardwareID로 서버에서 최신 오류를 찾는다. 자동 발견 자료는 서버 확인을 대신하지 않으며 Issue ID는 서버 조회 결과로만 보관·전달한다.
+ZIP·폴더가 없으면 [오류 자료 탐색](artifact-discovery.md)을 따른다. `start`의 `--artifacts`를 생략하면 소스 전체 경로와 HardwareID로 서버에서 최신 오류를 찾는다. 자동 발견 자료는 서버 확인을 대신하지 않으며 응답에 없는 Issue ID를 추측하지 않는다.
 
-## 1. 오류 자료와 동봉 PA 확인
+## 1. 오류 자료 확인
 
 ```powershell
-$skill = 'D:\04_AI_Workspace\cover-toolchain-recovery'
+$skill = '<cover-toolchain-recovery 스킬 폴더의 절대 경로>'
 python "$skill\scripts\cover_recovery.py" start `
   --artifacts 'D:\cases\error.zip' `
   --source 'C:\build\src\main.cpp' `
@@ -61,42 +61,24 @@ ZIP의 상위 폴더 이동, 절대 경로, Windows 장치명·ADS, 링크, 중�
 
 UTF-8 BOM, UTF-16 LE/BE BOM, CP949와 기존 개행을 보존한다. BOM이 없으면 UTF-8 우선·CP949 순으로 손실 없이 읽을 수 있는지 확인하며, `encoding_is_inferred=true`로 표시한다. 두 인코딩으로 모두 읽히는 바이트는 이 방법만으로 원래 인코딩을 확정할 수 없다. 글자가 이상하면 원본 인코딩 근거를 먼저 확인한다. 혼합 개행이나 원래 인코딩으로 표현할 수 없는 변경은 자동 적용하지 않는다.
 
-## 3. 동봉된 tmpa로 복사본 검증
+## 3. 서버에서 후보 검증
 
-기본 PA 경로는 현재 작업 폴더와 관계없이 `$skill\assets\tmpa`다. `start`·`collect`에서 선택한 경로는 case에 저장해 `verify`에서 다시 사용한다. PA 경로가 없는 이전 case도 동봉 PA를 확인한다. 다른 PA의 경로·배포 구조는 [PA 실행 계약](pa-runtime.md)을 따른다.
+[서버 TMPA 실행 계약](server-execution.md)을 따른다. 서버 수집 case와 환경변수의 Access key가 필요하다.
 
-```powershell
-python "$skill\scripts\cover_recovery.py" runtime
-
-python "$skill\scripts\cover_recovery.py" verify `
-  --case 'D:\cases\runs\case-001\case.json' `
-  --candidate 'D:\cases\candidate.json'
+```text
+python "${SKILL_ROOT}/scripts/cover_recovery.py" verify --case <case.json> --candidate <후보.json>
 ```
 
-`runtime`은 배포 파일 점검이지 PA 실행 성공이 아니다. 동봉 PA가 없거나 사용할 수 없으면 `verify`도 `GuidanceOnly`로 끝나며 후보 적용·서버 변경을 하지 않는다. 보고서의 확인 경로와 `runtime.blockers`에서 누락·OS 불일치를 확인한다.
+각 시도는 `attempts/<번호>/`에 원본과 분리해 준비한다. `proposed.conf`는 서버에 보낼 설정이며 `workspace/`는 변경 비교·입력 보존용 복사본이다. DB·INI·소스·로그는 바이트 그대로 복사하고 후보 `.conf`만 수정한다. 경로 치환과 tmpa 실행은 서버가 맡는다. `proposal.diff`는 설정 변경, `workspace/verification.json`은 입력·컴파일러·TU(분석 소스 단위) 기록이다. 서버가 실행할 이슈의 실제 범위는 서버 API가 결정한다.
 
-검증 폴더는 매번 `attempts/<번호>/workspace`로 새로 만든다. case당 최대 3회이며 `VerificationBlocked`도 포함한다. 회당 기본 600초, `--timeout`은 1~600초다. 같은 변경을 반복하지 않고, 차단된 후보는 조건 해결 후 남은 시도에서 재검증한다. 조건이 같으면 반복하지 않으며 새 case로 한도를 우회하지 않는다. 무시·치환·문법 완화 옵션은 자동 후보와 PA 검증에서 제외한다.
-
-| 시도별 파일 | 용도 |
-| --- | --- |
-| `proposed.conf` | 로컬 검증 경로로 바꾸기 전의 논리적 변경안. |
-| `workspace/…conf` | PA 검증용 설정. 필요한 참조 경로를 해당 검증 폴더로 바꾼 파일. 서버에 그대로 전송하지 않음. |
-| `proposal.diff` | 원본과 실제 검증용 설정의 차이. |
-| `workspace/verification.json` | 대상 컴파일러·전체 TU, 설정 경로, 파일 해시, 경로 점검 결과. |
-
-TU는 한 번에 분석하는 소스 단위다. 같은 컴파일러의 가용 TU 전체를 선택하며 제외·비활성 단위가 섞이면 자동으로 범위를 바꾸지 않고 중단한다. 다른 자식 case에도 같은 컴파일러가 있으면 일부만 성공으로 반영하지 않도록 중단한다. 현재 버전은 여러 case의 PA 결과를 합쳐 검증하지 않는다.
-
-복사한 DB의 정확한 설정 키는 `Compiler.confFile`이다. 해당 컴파일러 행만 변경하고 다른 컴파일러 행은 유지한다. `PREPROCESS_PATH`, `ImportInfo`, `logPath` 등은 확인된 원래 경로 접두어를 이용해 복사본 안으로 바꾼다. 제품 DB의 뷰·트리거·가상 테이블 존재 자체는 차단 사유가 아니다. 복사본 수정 중에는 트리거를 잠시 내렸다가 원문 그대로 복원하고 가상 테이블·shadow table은 수정하지 않는다. 알 수 없는 절대 경로·명령 안의 경로처럼 안전하게 옮길 수 없는 실제 값만 `path_audit.safe=false`로 막는다. 이것은 경로 점검이며 실제 PA 호환성 검증을 대신하지 않는다.
-
-원본 소스가 없는 오류 자료는 DB의 소스 경로만 검증 폴더 안으로 바꿀 수 있다. 가짜 소스 파일은 만들지 않는다. 실제 복사된 소스 또는 해당 TU의 전처리 파일이 있어야 PA 실행으로 넘어갈 수 있다.
+새 실행은 최대 3회다. RUNNING·조회 오류 뒤에는 동일 명령으로 기존 runId를 조회한다. `--timeout`은 1~60초 조회 대기이며 30분 서버 실행 제한과 다르다. 상세 판정·재개·오류 아카이브는 [PA 실행 계약](server-execution.md)에 있다.
 
 ## 4. 결과 읽기
 
-```powershell
-python "$skill\scripts\cover_recovery.py" inspect `
-  --case 'D:\cases\runs\case-001\case.json'
+```text
+python "${SKILL_ROOT}/scripts/cover_recovery.py" inspect --case <case.json>
 ```
 
-새 실행에서 대상 TU가 실제 처리됐고, 변경 설정이 적용됐고, 오류가 해소됐는지 확인해야 한다. 종료 코드 0이나 예전 `.elog`·산출물만으로 성공 처리하지 않는다.
+`Recovered`는 서버의 SUCCEEDED 응답을 확인했다는 뜻이다. 클라이언트에서 새 계측 파일·DB 전환을 관측한 결과가 아니다. 실패 시 `error-artifacts/`의 이번 로그로 진단을 갱신하고 원본 설정 기준의 새 후보를 작성한다.
 
-PA 검증 성공 상태는 `Recovered`다. 로컬 검증 명령은 서버·Agent를 바꾸지 않는다. 복구 작업은 [서버 반영과 되돌리기](server-publication.md)의 읽기 전용 계획과 실제 반영까지 추가 승인 없이 이어간다. 진단·설명·로컬 검증만 요청했으면 종료한다. 이 흐름은 원래 빌드나 `.cvd` 수집 성공을 뜻하지 않는다.
+복구 요청은 [서버 반영과 되돌리기](server-publication.md)까지 이어간다. 진단·검증만 요청했다면 툴체인과 Wrapper를 변경하지 않는다. 로컬 작업만 요청했으면 API 실행 전 진단에서 종료한다.

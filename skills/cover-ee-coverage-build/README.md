@@ -11,12 +11,12 @@
 기본 작업은 다음 세 가지로 구성된다.
 
 1. **원본 빌드 확인**: 고객의 빌드 방법으로 실제 빌드하고, 사용된 도구와 산출물을 확인한다.
-2. **커버리지 빌드**: 원본 빌드에 wrapper, CscHooker 또는 JACOV를 연결하고 계측 결과를 검증한다.
+2. **커버리지 빌드**: 원본 빌드에 wrapper, CscHooker 또는 JACOV를 연결하고 커버리지 빌드 명령의 종료 코드를 확인한다.
 3. **이후 빌드 준비**: 검증한 설정을 유지하고 IDE 또는 수동 명령으로 다시 빌드하는 방법을 제공한다.
 
-커버리지 빌드 성공은 빌드 종료 코드만으로 판단하지 않는다. 실제 계측 처리가 확인되고, 원본 산출물과 **같은 절대 경로**에 이번 빌드의 산출물이 생성·갱신되어야 한다. 출력 경로는 COVER가 빌드 대상을 식별하는 데 중요한 정보이므로 임시 프로젝트나 별도 출력 경로로 바꾸지 않는다.
+커버리지 빌드는 명령의 종료 코드가 0이면 성공으로 판정한다. 탐침 로그·심볼·처리 건수와 빌드 후 산출물 갱신·경로를 추가로 검사하지 않는다. 다만 출력 경로는 COVER가 빌드 대상을 식별하는 데 중요한 정보이므로 실행 전 계획에서 원본 경로를 유지하며, 임시 프로젝트나 별도 출력 경로로 바꾸지 않는다.
 
-계측 빌드는 성공했지만 재사용 설정 적용에 실패했다면 두 결과를 구분해 보고한다. 전체 작업은 재사용 설정 적용까지 끝나야 성공으로 기록한다.
+계측 빌드는 성공했지만 재사용 설정 적용에 실패했다면 두 결과를 구분해 보고한다. 설정 적용 실패로 이미 성공한 빌드 결과를 변경하지 않고, 남은 작업과 복구 결과를 함께 안내한다.
 
 프로그램 실행, 별도 테스트 시나리오 수행, 서버 Module 조회, 측정 데이터 수집은 기본 빌드 작업에 포함하지 않는다. 다만 고객이 선택한 원본 goal이나 task 자체에 테스트가 포함되어 있으면 그 빌드 절차는 유지한다. STM32CubeIDE의 메모리 덤프와 CVD 수집은 별도 `cover-ee-coverage-collect` 스킬이 담당한다.
 
@@ -56,12 +56,15 @@ cover_workflow_runner.py              공개 실행 진입점
            ▼
 cover_build/workflow.py               작업 생성·재개, 환경 분기, 적용·보고
            ├─ planning/               조사, 원본 계획, 결정 검증
-           ├─ pipelines/              환경별 원본 빌드와 계측 순서
-           │    └─ services/common    Agent/API, 명령 실행, 도구·산출물 확인
+           ├─ pipelines/registry.py  선택한 환경의 실행 모듈 연결
+           │    └─ <환경>.run()       환경별 원본 빌드와 커버리지 빌드 순서
+           │         └─ services/common  Agent/API, 명령 실행, 도구·산출물 확인
            └─ core/                   상태, 증거, 재사용 설정, 복구, 보고
 ```
 
 문서는 AI가 판단할 기준을 설명하고, 스크립트는 반복 실행과 검증을 담당한다. 환경마다 빌드 방식이 다르므로 공통 실행기가 모든 환경에 같은 세부 단계를 강제하지 않는다.
+
+코드의 호출 관계를 따라갈 때는 `cover_workflow_runner.main()`에서 `workflow.run()`으로 이동한 뒤, `pipelines/registry.py`에 등록된 환경의 `run()`을 읽는다. 공통 기능은 각 파이프라인의 import에서 구현 위치를 확인한다. 공개 CLI에는 환경별 실행이나 공통 함수 전달을 위한 중간 연결을 두지 않는다.
 
 예를 들어 사용자가 다음과 같이 요청한다.
 
@@ -76,7 +79,7 @@ AI는 필요한 입력을 확인한 뒤 Python 실행기를 호출한다. 실행
   → 원본 빌드 및 실제 도구·산출물 확인
   → 인증과 환경별 COVER 준비
   → 커버리지 빌드
-  → 실제 계측 처리와 동일 경로 산출물 검증
+  → 종료 코드로 커버리지 빌드 결과 판정
   → 재사용 설정 적용 및 필요한 재빌드 검증
   → 결과와 이후 빌드 방법 안내
 ```
@@ -129,11 +132,11 @@ Agent 프로세스가 존재한다는 이유만으로 준비 완료로 보지 �
 
 ### 2.6. 검증과 재사용 설정 적용
 
-환경별 실제 계측 처리와 빌드 성공을 확인하고, 산출물을 원본 빌드 기록과 비교한다. 원본 목록을 그대로 복사해 자기 자신과 비교하지 않으며 현재 빌드에서의 생성·갱신 여부를 별도로 확인한다.
+환경별 커버리지 빌드 명령의 종료 코드로 결과를 판정한다. 원본 조사에서 기록한 출력 경로는 유지하되, 빌드 후 탐침 처리나 산출물 갱신·경로를 별도로 검증하지 않는다.
 
 검증이 끝나면 작업용 임시 설정을 재사용 가능한 위치로 옮긴다. Visual Studio와 STM32CubeIDE는 임시 주입을 제거한 빌드도 검증한다. 보조 실행 스크립트가 생성됐다는 사실만으로 IDE 재사용 성공을 선언하지 않는다.
 
-최종 보고는 성공·실패·대기 여부를 첫 줄에 표시한다. 이어서 빌드 환경, 실제 명령, 계측 결과, 산출물, 변경·백업 파일과 이후 빌드 방법을 설명한다.
+최종 보고는 성공·실패·대기 여부를 첫 줄에 표시한다. 이어서 빌드 환경, 실제 명령과 종료 코드, 계획에 기록한 출력 경로, 변경·백업 파일과 이후 빌드 방법을 설명한다.
 
 ## 3. 환경별 수행 시나리오
 
@@ -157,7 +160,7 @@ props 연결은 선택 구성의 `ImportGroup Label="PropertySheets"`에 둔다.
 3. 원본 빌드에 사용한 선택값을 같은 작업의 기록에 저장한다. 이후 재개 시 인자가 생략돼도 일반적인 `<프로젝트>/build`로 다시 선택하지 않는다.
 4. 원본과 같은 build 디렉터리에서 커버리지 configure를 수행한다. 원본에서 관찰된 역할에 맞춰 `CMAKE_C_COMPILER`, `CMAKE_CXX_COMPILER`, `CMAKE_AR`, 필요한 경우 `CMAKE_LINKER`에 wrapper를 명령행으로 지정한다.
 5. configure 또는 실제 상세 빌드에서 명령행 지정이 무시된 사실을 확인한 경우에만 프로젝트 소유 `CMakeLists.txt`와 직접 참조 `.cmake`의 해당 도구 설정을 백업·최소 수정한다.
-6. 실제 wrapper 처리와 동일 경로의 신규 산출물이 확인되면, 성공한 configure/build 명령과 필요한 수정본을 재사용할 수 있도록 남긴다.
+6. 커버리지 빌드가 종료 코드 0으로 끝나면, 성공한 configure/build 명령과 필요한 수정본을 재사용할 수 있도록 남긴다.
 
 원본 configure와 커버리지 configure는 각각 수행하고 둘 사이의 캐시를 그대로 재사용하지 않는다. 이는 **빌드 디렉터리를 새 경로로 바꾼다는 뜻이 아니다.** 선택한 build 디렉터리와 최종 산출물 경로는 유지한다. 재개 시 선택값을 보존하는 방식은 8절에서 설명한다.
 
@@ -168,7 +171,7 @@ props 연결은 선택 구성의 `ImportGroup Label="PropertySheets"`에 둔다.
 3. 원본 빌드의 상세 명령에서 실제 컴파일러·링커·아카이버와 산출물을 확인한다.
 4. 원본에서 관찰된 역할에 해당하는 `CC`, `CXX`, `LD`, `AR` 또는 확인된 고객 도구 변수를 명령행으로 전달해 wrapper를 적용한다.
 5. 하드코딩·`override`·하위 Make 호출 때문에 wrapper가 적용되지 않은 사실을 확인한 경우에만 프로젝트 소유 Makefile, 포함된 `.mk`, 도구를 직접 호출하는 스크립트를 백업·최소 수정한다.
-6. 원래 빌드 위치에서 clean/build하고 실제 wrapper 처리와 동일 경로의 신규 산출물을 확인한다. 성공한 Make 명령과 필요한 수정본을 남긴다.
+6. 원래 빌드 위치에서 clean/build하고 종료 코드를 확인한다. 성공한 Make 명령과 필요한 수정본을 남긴다.
 
 ### CMake·Make에서 공통으로 지키는 변경 범위
 
@@ -201,7 +204,7 @@ wrapper 대상은 C/C++, 링크, 아카이브 역할이다. ASM이나 objcopy �
 3. 필요한 NuGet restore를 수행하고 원본 빌드에서 실제 C# 컴파일러를 확인한다.
 4. Agent를 준비하고 Toolbox 입력 설정에 확인된 컴파일러를 반영한다.
 5. Toolbox CLI의 `enable`로 고객 프로젝트에 wrapper 연결을 적용한 뒤 같은 조건으로 빌드한다.
-6. 선택 프로젝트의 CscHooker 처리와 산출물을 확인한다. 정상적인 소스 제외만으로 계측 실패라고 판단하지 않는다.
+6. 커버리지 빌드 명령의 종료 코드를 확인한다. CscHooker 처리와 소스 제외 통계는 따로 검사하지 않는다.
 7. 성공한 프로젝트 연결은 유지한다. 실패 시 Toolbox로 연결을 해제한다. 작업 중 바꾼 Toolbox 입력 설정은 성공·실패와 관계없이 복구한다.
 
 Toolbox CLI는 직접 계측하는 도구가 아니라 CscHooker가 호출되도록 빌드 연결을 설정한다. 고객 `.csproj`의 COVER 설정도 Toolbox로 변경하며 AI가 XML을 수동 편집하지 않는다. 상세 절차는 [C# 문서](references/csharp.md)를 참고한다.
@@ -212,13 +215,15 @@ Java는 원본 빌드에서 JDK와 산출물을 확인한 뒤 설치된 JACOV �
 
 - **Maven**: 고객 goal·profile·property를 유지한다. JACOV plugin을 Maven 로컬 저장소에 먼저 설치하고 별도 빌드 호출에서 `setup` goal을 적용한다. 필요한 lower JAR의 로컬 등록과 애플리케이션 런타임 의존성 주입은 구분한다. POM은 변경하지 않고 재실행 명령을 제공한다.
 - **Gradle**: 원본 빌드의 관찰용 init script로 실제 JDK와 archive 경로를 확인한다. 계측에는 설치된 JACOV JAR의 경로가 반영된 별도 init script를 사용한다. 성공 후 JAR와 init script를 프로젝트 루트에 두고 `--init-script` 명령을 제공한다. 고객 Gradle 빌드 파일은 변경하지 않는다.
-- **직접 빌드**: 검증된 `JAVA_CLI` 원본 계획과 계측 인자가 필요하다. 자동으로 정할 수 없으면 모델 결정으로 받는다. 계측 소스의 임시 위치와 최종 산출물 위치를 구분하며, 최종 산출물은 원본 경로에 만들어야 한다.
+- **직접 빌드**: 검증된 `JAVA_CLI` 원본 계획과 `javaCliIntegration` 결정이 필요하다. 기본은 별도 디렉터리에 계측 소스를 만들고 빌드 파일의 컴파일 입력을 연결하는 방식이다. 소스 경로가 빌드 프로그램에 고정되어 작은 수정으로 입력을 바꿀 수 없을 때만 `IN_PLACE`를 선택한다. 이 경우 빌드 동안만 계측본을 원본 위치에 두며 성공·실패 후 소스를 복구한다. 최종 산출물은 두 방식 모두 원본 경로에 만든다. `IN_PLACE`의 이후 커버리지 빌드는 `.cover-ee` 명령으로 계측·빌드·복구를 반복한다. 상세 선택 기준과 복구 예외는 [Java 문서](references/java.md)를 따른다.
 
-커버리지 clean 전에 설정 파일, plugin과 실행 환경, JACOV 서버 TCP 연결을 확인한다. TCP 연결 성공은 제품 인증 성공을 의미하지 않으며, 실제 연결·계측 성공은 빌드 결과에서 확인한다.
+원본 Java 빌드가 테스트나 프로그램을 실행한다면 `javaBuildRuntime`으로 실행 위치를 확인하고 그 JVM에만 생성된 JavaLib Agent를 추가한다. Maven의 테스트 JVM 속성, Gradle의 지정한 `Test` 태스크, 직접 빌드의 대상 JVM 전용 옵션 변수를 지원한다. 테스트를 생략하거나 빌드 도구 전체에 Agent를 주입하지 않는다. 빌드 중 실행이 없으면 런타임을 추가하지 않으며, 빌드 성공과 별도 측정 결과 확인은 구분한다.
 
-Maven·Gradle은 JACOV 집계 또는 파일별 결과로 계측 성공을 확인한다. 정상적인 `[IGNORE]`와 계측 자체를 건너뛴 경우를 구분한다. 계측 실패가 있거나 실제 성공을 확인할 수 없으면 빌드 종료 코드가 정상이어도 성공 처리하지 않는다.
+커버리지 clean 전에 설정 파일, plugin과 실행 환경, JACOV 서버 TCP 연결을 확인한다. TCP 연결 성공은 제품 인증 성공을 의미하지 않으며, 연결·인증 오류로 빌드가 실패하면 해당 로그로 원인을 진단한다. 빌드 성공을 탐침 또는 측정 성공의 증명으로 표현하지 않는다.
 
-Maven·Gradle 빌드 단계에서는 `addDependencyJavaLib=false`로 런타임 선택을 미룬다. 성공 보고에서 다음 두 실행 방식을 안내하되 동시에 적용하지 않는다.
+Maven·Gradle도 커버리지 빌드 명령의 종료 코드로 판정한다. JACOV 집계 marker나 파일별 처리 결과를 추가 성공 조건으로 사용하지 않는다.
+
+Maven·Gradle 빌드 중 계측 클래스를 실행하는 JVM을 확인하고 LOWER 또는 Java Agent를 선택한다. LOWER의 제품 의존성 추가 방식이면 `addDependencyJavaLib=true`를 사용하고, Gradle의 `javaLibJarDir`도 검증한 설치 경로로 지정한다. 다른 연결 방식에서는 자동 추가를 끄며 동일 실행에 두 런타임을 중복 적용하지 않는다. 별도 실행은 다음 두 방식을 실행 환경에 맞춰 다시 판단한다.
 
 - **LOWER**: `tm-javalib-lower.jar`를 실행 classpath에 추가해 Local Agent와 연동한다.
 - **JavaLib Agent**: `cover-javalib-agent.jar`를 실행 JVM의 `-javaagent`로 연결한다.
@@ -233,7 +238,7 @@ AI는 사용자 요청을 해석하고 작업을 진행하지만, 명령 실행�
 | --- | --- |
 | AI | 누락 입력 요청, 여러 후보의 의미 해석, 근거가 있는 선택값 전달, 실패 설명과 최종 보고 |
 | 조사·계획 코드 | 파일·설정·로그 수집, 단일 후보 확정, 명령 구조화와 결정 검증 |
-| 환경별 파이프라인 | 원본 빌드, 해당 환경의 COVER 준비, 계측 빌드와 검증 |
+| 환경별 파이프라인 | 원본 빌드, 해당 환경의 COVER 준비, 커버리지 빌드 실행과 종료 코드 확인 |
 | 공통 실행·상태 코드 | 프로세스 실행, 로그, 체크포인트, 백업·복구, 재사용 설정과 결과 기록 |
 
 결정이 필요하면 실행기는 `WAITING_MODEL` 또는 `WAITING_USER`와 필요한 항목을 남긴다. AI는 검증된 결정 파일을 만들어 같은 `job.json`으로 재개한다. 성공 기록을 직접 고치거나 검증을 생략해 다음 단계로 넘기지 않는다.
@@ -294,7 +299,7 @@ python "${SKILL_ROOT}/scripts/cover_workflow_runner.py" --job-context "<동일 �
 
 `--open-api-server-url`을 생략하면 `${CODESCROLL_TM_INSTALL_PATH}/agent_kit/open-api-credentials.json`에 캐시된 값을 사용한다. 캐시도 없으면 새 작업 생성이 `OPEN_API_MAIN_WEB_SERVER_URL_REQUIRED`로 중단된다.
 
-이 명령만으로 후보 선택이 생략되지는 않는다. 결정 파일 작성은 [결정 파일 문서](references/decision-contract-v2.md)를 따른다. AI 도구의 실행 권한과 Visual Studio 호스트 실행 조건은 [SKILL.md](SKILL.md)를 따르며, 실행기 인자만으로 권한이 부여되는 것은 아니다.
+이 명령만으로 후보 선택이 생략되지는 않는다. 결정 파일 작성은 [결정 파일 문서](references/decision-contract.md)를 따른다. AI 도구의 실행 권한과 Visual Studio 호스트 실행 조건은 [SKILL.md](SKILL.md)를 따르며, 실행기 인자만으로 권한이 부여되는 것은 아니다.
 
 ### 기능별 코드 위치
 
@@ -307,25 +312,29 @@ python "${SKILL_ROOT}/scripts/cover_workflow_runner.py" --job-context "<동일 �
 | MSBuild 실행 | `pipelines/visual_studio/msbuild.py` |
 | Visual Studio 도구 탐색과 커버리지 계획 | `pipelines/visual_studio/tools.py`, `pipelines/visual_studio/planning.py` |
 | GCC 원본 관찰과 계측 실행 | `pipelines/gcc/original.py`, `services/gcc_coverage.py` |
-| GCC 래퍼 준비와 CMake/Make 계획 | `common/gcc_tools.py` |
+| GCC 래퍼 준비와 CMake/Make 계획 | `planning/gcc_tools.py` |
 | CMake 원본 선택값 저장·재개 검증 | `pipelines/gcc/selection.py`, `pipelines/gcc/__init__.py` |
 | STM32CubeIDE 도구·구성 확인 | `pipelines/stm32cubeide/tools.py` |
 | 글루 코드용 C++ 컴파일러 | `services/glue_compiler.py` |
 | Agent 조회·생성·매핑 | `services/agent_open_api.py` |
 | Local Agent 확인 | `services/agent_local.py` |
 | 홈 JACOV 설정 생성 | `pipelines/java/jacov_config.py` |
+| Maven JACOV 설치와 명령 인자 구성 | `pipelines/java/maven.py` |
+| Gradle 관찰·JACOV init script 준비 | `pipelines/java/gradle.py` |
+| C# Toolbox 호출과 설정 백업·복구 | `pipelines/csharp/toolbox.py` |
 | 프로젝트 파일 백업 | `services/project_backup.py` |
 | 원본 도구·산출물 증거 | `core/original_build_evidence.py`, `core/job_evidence.py` |
 | 동일 작업 재개·시간 기록 | `core/state_store.py` |
 | 다른 작업의 환경조사 재사용 | `core/environment_profile.py` |
 | 성공 설정 적용·해제·복구 | `core/persistent_setup.py`, `pipelines/<환경>/persistent.py`, `common/project_edit.py` |
 | 명령 실행·빌드 로그 판독·산출물 스냅샷 | `common/processes.py`, `common/native_logs.py` |
+| 빌드 계획 검증·실행과 CMake 생성 상태 초기화 | `services/build_execution.py` |
 | Open API 요청과 서버 원점 | `common/open_api.py`, `common/servers.py` |
 | 작업 컨텍스트·무결성·경로 | `common/jobs.py`, `common/fileio.py`, `common/pathutil.py` |
-| 현재 PC의 Agent 식별·시작 | `common/agent_host.py` |
+| 현재 PC의 Agent 식별·시작 | `services/agent_host.py` |
 | 최종 보고 | `core/build_reporting.py` |
 
-`cover_build_executor.py`는 하위 명령 파서와 `main`만 가진 CLI다. 각 하위 명령의 구현은 `common/`과 환경 패키지의 함수이며, 파이프라인도 같은 함수를 직접 호출한다. 환경별 코드는 `pipelines/<환경>/` 패키지 하나에 모여 있고, 여러 환경이 함께 쓰는 Agent·API·글루 컴파일러·백업·GCC 커버리지 실행만 `services/`에 둔다. 세부 책임은 [구현 구조 문서](references/architecture.md)에서 확인한다.
+`cover_build_executor.py`는 하위 명령 파서와 `main`만 가진 CLI다. 각 하위 명령은 역할에 따라 `common/`, `planning/`, `services/`와 환경별 패키지의 구현 함수를 호출하며, 파이프라인도 같은 함수를 직접 사용한다. 환경별 코드는 `pipelines/<환경>/`에 두고, 여러 환경이 함께 쓰는 Agent·글루 컴파일러·백업·빌드 계획 실행은 `services/`에서 담당한다. 세부 책임은 [구현 구조 문서](references/architecture.md)에서 확인한다.
 
 문서와 코드의 역할도 구분한다. `SKILL.md`는 작업 지침과 필수 규칙, `references/`는 조건별 상세 절차, README는 전체 구조와 변경 검토 기준을 담당한다. 실제 옵션과 JSON의 필드·자료형은 이를 생성하고 읽는 Python 코드를 함께 확인한다. Open API 필드는 `references/cover-open-api-v1.json`과 API 호출 구현을 대조한다. 문서에 적힌 예제만 바꾸고 실행기의 입력·출력을 그대로 두면 이전과 같은 형식 불일치가 다시 발생할 수 있다.
 
@@ -337,7 +346,7 @@ python "${SKILL_ROOT}/scripts/cover_workflow_runner.py" --job-context "<동일 �
 | 빌드 후보 수집과 선택 | [discovery-and-planning.md](references/discovery-and-planning.md) |
 | 원본 명령 작성·검증 | [original-build-commands.md](references/original-build-commands.md) |
 | 환경조사 기록 | [environment-survey.md](references/environment-survey.md) |
-| 결정 파일 형식 | [decision-contract-v2.md](references/decision-contract-v2.md) |
+| 결정 파일 형식 | [decision-contract.md](references/decision-contract.md) |
 | 인증·서버·Agent 처리 | [security-and-api.md](references/security-and-api.md) |
 | 재개·캐시·시간 측정 | [performance.md](references/performance.md) |
 | 최종 보고 형식 | [build-reporting.md](references/build-reporting.md) |
@@ -392,7 +401,7 @@ Java key를 제품 설정 파일에 저장하는 것은 Access Key를 작업 JSO
 | `.cover-ee/config/`, `.cover-ee/backup/` | 재사용 설정과 원본 백업 |
 | `.cover-ee/build-coverage.cmd`, `.cover-ee/build-coverage.sh`, `.cover-ee/run-coverage.py` | 수동 재실행 진입점 |
 
-`cover-environment-survey.json`은 원본 빌드 방법을 결정하기 위한 사전 조사다. 실제 원본 도구와 산출물은 별도 `original-build-evidence.json`에 기록하고, 계측 결과는 단계 JSON에 기록한다. 사전 조사서를 계속 확장해 전체 작업 보고서로 사용하지 않는다.
+`cover-environment-survey.json`은 원본 빌드 방법을 결정하기 위한 사전 조사다. 실제 원본 도구와 산출물은 별도 `original-build-evidence.json`에 기록하고, 커버리지 빌드 명령·종료 코드·로그 경로는 단계 JSON에 기록한다. 사전 조사서를 계속 확장해 전체 작업 보고서로 사용하지 않는다.
 
 이후 수동 빌드가 `.cover-build/jobs/<jobId>`를 참조하면 해당 작업 디렉터리가 사라졌을 때 실패한다. 따라서 재사용 설정을 적용할 때 작업용 경로를 제거한다. `.cover-ee` 외에 환경별로 유지하는 파일은 3절의 시나리오를 따른다.
 
@@ -405,7 +414,7 @@ Java key를 제품 설정 파일에 저장하는 것은 Access Key를 작업 JSO
 | `FAILED` | 빌드·연결·계측·검증·설정 적용 중 실패 | 실패 단계와 로그를 확인하고 수정 범위 결정 |
 | `SUCCEEDED` | 전체 실행 성공을 나타내는 `status` 값 | 결과와 수동 빌드 방법 안내 |
 
-성공한 `workflow-state.json`에는 `status=SUCCEEDED`, `state=COVERAGE_BUILD_VERIFIED`, `result.persistentSetup.state=APPLIED`가 함께 기록된다. `COVERAGE_BUILD_VERIFIED`는 이름만 보면 계측 단계 결과처럼 보이지만, 현재 공통 실행기는 재사용 설정 적용까지 끝난 뒤 이 최종 상태를 기록한다. 계측만 성공하고 이후 설정 적용이 실패한 경우 전체 결과는 `FAILED`이며 단계 기록에서 계측 성공을 별도로 확인한다.
+커버리지 빌드 성공은 `COVERAGE_BUILD_SUCCEEDED`로 보고한다. `persistentSetup`은 별도 결과이므로 빌드 성공과 `APPLIED`를 같은 의미로 사용하지 않는다. 재사용 설정 적용에 실패하면 빌드 결과를 유지하고 적용 오류·복구 상태·남은 작업을 따로 보고한다.
 
 실행기 종료 코드는 각각 `WAITING_MODEL=2`, `WAITING_USER=3`, `FAILED=1`, `SUCCEEDED=0`이다. `--execute`가 없는 계획 확인 실행은 실제 빌드나 재사용 설정 적용을 수행하지 않는다.
 
@@ -416,7 +425,7 @@ Java key를 제품 설정 파일에 저장하는 것은 Access Key를 작업 JSO
 | 구분 | 재사용하는 내용 | 다시 확인할 내용 |
 | --- | --- | --- |
 | 같은 `job.json` 재개 | 입력과 증거가 유효한 성공 단계 | 관련 파일·명령·도구·산출물 변경 여부 |
-| 새 작업의 환경 프로필 사용 | 현재 프로젝트와 일치하는 조사 결과와 원본 명령 후보 | 새 원본 빌드, 실제 도구·산출물, 계측 결과 |
+| 새 작업의 환경 프로필 사용 | 현재 프로젝트와 일치하는 조사 결과와 원본 명령 후보 | 새 원본 빌드와 실제 도구·산출물 조사, 새 커버리지 빌드의 종료 코드 |
 | `.cover-ee` 수동 빌드 | 적용된 COVER 설정과 검증된 명령 | 이번 수동 빌드의 실행 결과. 과거 스킬 성공이 새 빌드의 성공을 대신하지 않음 |
 
 후속 선택을 보완했다는 이유만으로 무관한 원본 빌드를 반복하지 않는다. 반대로 소스·빌드 정의·명령·구성·도구가 바뀌면 관련 단계를 다시 수행한다. 다른 작업의 기록 사용을 금지한 요청에는 새 작업과 `--no-environment-profile`을 사용한다. 이 옵션이 현재 작업 안의 안전한 재개까지 금지하는 것은 아니다.
@@ -440,7 +449,7 @@ Java key를 제품 설정 파일에 저장하는 것은 Access Key를 작업 JSO
 
 재시도 로그는 `coverage-java.attempt-001.log`처럼 시도별로 남긴다. 단계 JSON에서 실제 로그를 찾고, 마지막 시도만 남는 대표 로그를 전체 실패 이력으로 오해하지 않는다. 시간 분석에서는 외부 빌드 명령, 실행기 활성 시간, 사용자·모델 결정 및 재개 대기를 구분한다. 단계 사이의 공백 전체를 컴파일 시간이나 순수 모델 추론 시간으로 설명하지 않는다.
 
-성능 개선은 기존 기록과 시간 측정을 활용한다. 보고서를 만들려고 추가 빌드나 서버 요청을 수행하지 않는다. 원본 빌드 관찰, 실제 계측 확인, 동일 경로 산출물 검증을 삭제해 실행 시간을 줄이지 않는다. 상세 재사용 조건과 측정 항목은 [성능 문서](references/performance.md)를 따른다.
+성능 개선은 기존 기록과 시간 측정을 활용한다. 보고서를 만들려고 추가 빌드나 서버 요청을 수행하지 않는다. 원본 빌드 관찰과 실행 전 설정·출력 경로 검증을 생략해 실행 시간을 줄이지 않는다. 빌드 후 탐침·산출물 검증은 현재 절차에 포함하지 않는다. 상세 재사용 조건과 측정 항목은 [성능 문서](references/performance.md)를 따른다.
 
 ## 9. 코드 리뷰 기준과 테스트
 
@@ -454,18 +463,18 @@ Java key를 제품 설정 파일에 저장하는 것은 Access Key를 작업 JSO
 | 원본 계획 | 고객 진입점·타깃·구성·환경 초기화를 유지한다 | 고객 명령을 근거 없이 기본 `build`로 교체함 |
 | 실제 도구 | 이번 원본 상세 빌드에서 관찰된 실행 경로와 역할을 매핑한다 | `cc` 별칭을 다른 바이너리 이름으로 바꾸거나 wrapper 자체를 원본으로 등록함 |
 | 글루 코드 | 타깃 C++ 드라이버를 별도로 확인한다 | 빌드 PC용 컴파일러를 쓰거나 보조 도구를 관찰된 wrapper 역할로 추가함 |
-| 출력 경로 | 현재 계측 산출물을 원본과 같은 절대 경로에서 확인한다 | 임시 디렉터리에서 성공한 결과를 원본 빌드와 같다고 보고함 |
+| 출력 경로 | 커버리지 계획에서 원본 출력 경로를 유지한다 | 임시 디렉터리에서 성공한 결과를 원본 빌드와 같다고 보고함 |
 | CMake 재개 | 저장한 원본 선택값을 검증·사용한다 | 재개 인자가 빠져 preset 경로 대신 기본 `build`가 선택됨 |
 | 단계 재사용 | 유효한 성공 단계만 재사용하고 관련 입력 변경은 감지한다 | 인증 입력 방식이 바뀔 때마다 원본을 반복하거나 소스 변경을 놓침 |
 | Agent/Open API | 기존 매핑을 변경하지 않고 누락된 항목만 추가한 뒤 재조회한다 | 링커의 정상 `toolChainInfo=null`을 오류로 보거나 공유 정의를 자동 수정함 |
 | 서버 연결 | Open API·Local Agent·JACOV 주소와 TLS 정책을 분리한다 | JACOV에 Open API 포트·HTTPS·인증서 예외를 강제함 |
 | 비밀값 | Access Key와 JACOV key를 명령·작업 기록·로그에 남기지 않는다 | 제품의 `Key:` 출력을 그대로 저장함. 누락 홈 JACOV 제품 설정 생성은 별도 허용 절차를 따름 |
 | CMake·Make 주입 | 명령행 실패 증거가 있을 때만 프로젝트 파일을 최소 수정한다 | 처음부터 파일을 수정하거나 원본 툴체인 바이너리를 교체함 |
-| C# 설정 | 고객 프로젝트는 Toolbox로 변경하고 실제 CscHooker 처리를 확인한다 | Toolbox 종료 코드만으로 성공하거나 정상 제외만으로 실패 처리함 |
-| Java 계측 | JACOV 실제 결과와 빌드 산출물을 확인한다 | 집계 문구가 없다는 이유만으로 유효한 파일별 결과를 버림 |
+| C# 설정 | 고객 프로젝트는 Toolbox로 변경하고 실제 커버리지 빌드 종료 코드를 확인한다 | Toolbox 종료 코드만으로 성공하거나 정상 제외만으로 실패 처리함 |
+| Java 계측 | JACOV를 연결한 빌드 명령의 종료 코드로 판정한다 | 집계 문구나 성공 건수 부재로 성공한 빌드를 실패 처리함 |
 | IDE·수동 재사용 | 작업 임시 경로에 의존하지 않고 환경별 연결과 검증을 완료한다 | 보조 스크립트만 생성하고 `APPLIED`로 기록함 |
 | 복구 | 현재 바이트와 기존 사용자 변경을 보존한다 | 동시 변경을 덮어쓰거나 전역 설정·공유 SDK를 무단 변경함 |
-| 결과 보고 | 첫 줄의 최종 판정과 단계별 결과를 일치시킨다 | 계측 성공·설정 적용 실패를 전체 성공으로 보고함 |
+| 결과 보고 | 첫 줄의 최종 판정과 단계별 결과를 일치시킨다 | 설정 적용 실패를 빌드 실패로 바꾸거나 재사용 준비까지 완료됐다고 보고함 |
 
 기준 자체를 바꾸는 요구가 있으면 코드만 고치지 않는다. 변경 이유, 영향받는 환경, 복구 방식과 테스트를 함께 제시하고 문서도 맞춘다. 단순 리팩토링에서는 기능과 수행 순서를 그대로 유지한다.
 

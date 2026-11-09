@@ -1,4 +1,4 @@
-"""로컬 검증 상태를 보존한다. 서버 변경은 deployment.py에서만 수행한다."""
+"""서버 TMPA 검증 상태를 보존한다. 툴체인·Wrapper 반영은 deployment.py에서 수행한다."""
 
 from __future__ import annotations
 
@@ -73,16 +73,13 @@ def write_report(case: dict) -> None:
         blockers.append(case["last_error"].get("message", "작업 중단"))
     if blockers:
         lines += ["## 남은 조건", ""] + [f"- {item}" for item in blockers] + [""]
-    runtime = case.get("runtime", {})
-    if runtime:
-        lines += ["## PA 실행 파일", "", f"- 확인한 위치: {case.get('pa_root') or runtime.get('root', '')}",
-                  f"- 실행 파일: {runtime.get('executable') or '찾지 못함'}", ""]
-        if not runtime.get("available"):
-            lines += ["PA를 사용할 수 없어 진단·변경안 안내만 가능합니다. 스킬의 tmpa 배포 파일 또는 명시한 PA 경로를 확인하세요.", ""]
-            for blocker in runtime.get("blockers", []):
-                lines.append(f"- {blocker.get('code', '')}: {blocker.get('message', '')}"
-                             if isinstance(blocker, dict) else f"- {blocker}")
-            lines.append("")
+    lines += ["## PA 실행 위치", "", "- COVER 서버의 tmpa-run API", ""]
+    for attempt in case.get("attempts", []):
+        remote = attempt.get("remote", {})
+        if remote:
+            lines += [f"- runId: {remote.get('run_id', '응답 미확인')}",
+                      f"- 서버 상태: {remote.get('status', remote.get('submission'))}",
+                      f"- tmpa 버전: {remote.get('tmpa_revision') or '미확인'}", ""]
     lines += [
         "이 기록은 네이티브 빌드, 계측 컴파일, 커버리지 수집 성공을 뜻하지 않습니다.",
         "실제 재빌드는 호출한 스킬이 수행해야 합니다.", "",
@@ -90,25 +87,15 @@ def write_report(case: dict) -> None:
     (Path(case["run_dir"]) / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def begin_case(artifacts: Path, run_dir: Path, source: str,
-               pa_root: Path | None = None, executable: Path | None = None) -> dict:
+def begin_case(artifacts: Path, run_dir: Path, source: str) -> dict:
     from .workspace import start_case
-    from .pa import inspect_runtime, resolve_runtime_paths
     case = start_case(artifacts, run_dir, source)
-    runtime_root, executable = resolve_runtime_paths(pa_root, executable)
     case.update({
         "schema_version": 1, "created_at": utc_now(), "attempts": [],
-        "pa_root": str(runtime_root),
-        "pa_executable": str(executable) if executable else None,
-        "pa_status": "NotStarted", "server_status": "NotStarted",
+        "execution_mode": "server", "pa_status": "NotStarted", "server_status": "NotStarted",
         "handoff_status": "NotReady",
     })
-    runtime = inspect_runtime(runtime_root, executable)
-    case["runtime"] = runtime
-    case["status"] = (
-        "GuidanceOnly" if not runtime.get("available") else
-        "VerificationBlocked" if case.get("blockers") else "Ready"
-    )
+    case["status"] = "VerificationBlocked" if case.get("blockers") else "Ready"
     save_case(case)
     return case
 
@@ -140,31 +127,33 @@ def ensure_originals(case: dict) -> None:
         raise RecoveryError("InputChanged", "보존 입력의 파일 목록이 변경됐습니다.")
 
 
-def verify_case(case_path: Path, candidate_path: Path, *, pa_root: Path | None = None,
-                executable: Path | None = None, timeout_seconds: int = 600) -> dict:
+def verify_case(case_path: Path, candidate_path: Path, *, client=None,
+                timeout_seconds: int = 60, platform: str | None = None) -> dict:
     from .workspace import prepare_attempt
-    from .pa import inspect_runtime, resolve_runtime_paths, run_pa
+    from .pa import run_pa
     case = load_case(case_path)
     with case_lock(case):
         if case.get("server_status") != "NotStarted":
             raise RecoveryError("CaseAlreadyPublished", "서버 반영을 시작한 사례에는 새 후보를 적용하지 않습니다.")
-        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) or not 1 <= timeout_seconds <= 600:
-            raise RecoveryError("InvalidTimeout", "회당 실행 시간은 1~600초입니다.")
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) or not 1 <= timeout_seconds <= 60:
+            raise RecoveryError("InvalidTimeout", "한 번의 조회 대기는 1~60초입니다. 서버 실행 제한은 30분입니다.")
         ensure_originals(case)
-        if pa_root is not None or executable is not None:
-            root, exe = resolve_runtime_paths(pa_root, executable)
-        else:
-            root, exe = resolve_runtime_paths(case.get("pa_root"), case.get("pa_executable"))
-        runtime = inspect_runtime(root, exe)
-        case["runtime"] = runtime
-        case["pa_root"] = str(root)
-        case["pa_executable"] = str(exe) if exe else None
-        if not runtime.get("available"):
-            case["status"] = "GuidanceOnly"
-            case["pa_status"] = "NotRun"
+        collection = case.get("collection", {})
+        if (client is None or not collection.get("server_url") or not collection.get("hardware_id")
+                or collection.get("source_path") != case["source_path"]
+                or collection.get("selection") != "server_latest_by_mac_and_source_path"):
+            case.update(status="NeedsInput", pa_status="NotRun")
+            case["last_error"] = {"code": "ServerIssueRequired", "message":
+                "서버 Issue 자료가 필요합니다. start 또는 collect로 서버·HardwareID·소스를 확인해 새 case를 수집하세요."}
             save_case(case)
             return case
-        if len(case["attempts"]) >= 3:
+        if platform is not None and platform not in {"win", "linux"}:
+            raise RecoveryError("InvalidInput", "platform은 빌드 PC의 win 또는 linux입니다.")
+        previous = case["attempts"][-1] if case["attempts"] else {}
+        remote = previous.get("remote", {})
+        resume = (remote.get("pending") or remote.get("pending_archive")
+                  or remote.get("submission") == "Accepted" and previous.get("result", {}).get("mode") != "server")
+        if not resume and len(case["attempts"]) >= 3:
             raise RecoveryError("AttemptLimit", "최대 3회에 도달했습니다. 결과와 추가 조치를 검토하세요.")
         candidate = read_json(candidate_path)
         if not isinstance(candidate.get("replacements", []), list) or not all(
@@ -176,32 +165,37 @@ def verify_case(case_path: Path, candidate_path: Path, *, pa_root: Path | None =
             "replacements": candidate.get("replacements", []),
             "append_lines": candidate.get("append_lines", []),
         })
-        for previous in case["attempts"]:
-            if previous.get("candidate_signature") == signature and previous.get("result", {}).get("status") != "VerificationBlocked":
+        for completed in ([] if resume else case["attempts"]):
+            if completed.get("candidate_signature") == signature and completed.get("result", {}).get("status") != "VerificationBlocked":
                 raise RecoveryError("RepeatedCandidate", "이미 검증한 동일 설정 변경입니다.")
         changed_lines = [edit.get("new", "") for edit in candidate.get("replacements", [])]
         changed_lines += candidate.get("append_lines", [])
         risky = ("cs_replace_code", "cs_ignore_", "cs_disable_keyword", "cs_allow_")
         if any(str(line).strip().startswith(risky) for line in changed_lines):
             raise RecoveryError("UnsupportedSemanticChange", "분석 의미를 제거하거나 느슨하게 만들 수 있는 옵션은 자동 검증 대상이 아닙니다.")
-        attempt = prepare_attempt(case, candidate)
-        attempt["candidate_signature"] = signature
-        attempt.setdefault("proposal", candidate)
-        attempt["result"] = {"status": "Prepared"}
-        case["attempts"].append(attempt)
+        if resume:
+            attempt = previous
+            if attempt.get("candidate_signature") != signature:
+                raise RecoveryError("RunPending", "기존 서버 실행을 같은 후보로 먼저 조회하세요.")
+            saved_platform = remote.get("request", {}).get("platform")
+            if platform is None:
+                platform = saved_platform
+        else:
+            attempt = prepare_attempt(case, candidate)
+            attempt["candidate_signature"] = signature
+            attempt.setdefault("proposal", candidate)
+            attempt["result"] = {"status": "Prepared"}
+            case["attempts"].append(attempt)
+            attempt["verification_manifest_sha256"] = sha256_file(Path(attempt["workspace"]) / "verification.json")
+        case["execution_mode"] = "server"
         case["status"] = "Verifying"
         case["pa_status"] = "Running"
         case.pop("publish_plan_digest", None)
         case.pop("last_error", None)
-        attempt["verification_manifest_sha256"] = sha256_file(Path(attempt["workspace"]) / "verification.json")
         save_case(case)
         try:
-            if not attempt.get("path_audit", {}).get("safe"):
-                result = {"status": "VerificationBlocked",
-                          "blockers": attempt.get("path_audit", {}).get("blockers", [])}
-            else:
-                result = run_pa(Path(attempt["workspace"]), runtime, Path(attempt["conf_path"]),
-                                int(case["compiler_id"]), timeout_seconds=timeout_seconds)
+            result = run_pa(case, attempt, client, save=save_case,
+                            timeout_seconds=timeout_seconds, platform=platform)
             ensure_originals(case)
         except RecoveryError as exc:
             result = {"status": "VerificationBlocked", "error": exc.as_dict()}
@@ -229,19 +223,18 @@ def verified_attempt(case: dict) -> dict:
         raise RecoveryError("PaNotVerified", "최근 시도가 PA 검증에 성공하지 않았습니다.")
     required = ("workspace", "conf_path", "conf_sha256", "portable_conf_path", "portable_conf_sha256")
     if any(not isinstance(attempt.get(key), str) or not attempt[key] for key in required):
-        raise RecoveryError("MissingPortableConfig", "실행용·배포용 설정의 검증 기록이 모두 필요합니다.")
+        raise RecoveryError("MissingPortableConfig", "후보 사본·서버 전송 설정의 검증 기록이 모두 필요합니다.")
     workspace = Path(attempt["workspace"]).resolve()
     conf = Path(attempt["conf_path"]).resolve()
     portable = Path(attempt["portable_conf_path"]).resolve()
     if (not workspace.is_relative_to(Path(case["run_dir"]).resolve() / "attempts")
             or not conf.is_relative_to(workspace)
             or portable.parent != workspace.parent or portable == conf):
-        raise RecoveryError("UnsafeConfig", "실행용 설정과 별도 배포용 설정의 위치가 올바르지 않습니다.")
+        raise RecoveryError("UnsafeConfig", "후보 사본과 서버 전송 설정의 위치가 올바르지 않습니다.")
     for path, digest in ((conf, attempt["conf_sha256"]), (portable, attempt["portable_conf_sha256"])):
         if not path.is_file() or sha256_file(path) != digest:
-            raise RecoveryError("VerifiedConfigChanged", "PA 검증 후 실행용 또는 배포용 설정이 변경됐습니다.")
-    if (not attempt.get("path_audit", {}).get("safe")
-            or attempt.get("compiler_id") != case.get("compiler_id")
+            raise RecoveryError("VerifiedConfigChanged", "서버 검증 후 후보 사본 또는 전송 설정이 변경됐습니다.")
+    if (attempt.get("compiler_id") != case.get("compiler_id")
             or attempt.get("selected_tu_ids") != case.get("selected_tu_ids")):
         raise RecoveryError("VerifiedCaseChanged", "검증한 컴파일러·분석 대상 기록과 현재 사례가 다릅니다.")
     manifest = workspace / "verification.json"
@@ -249,16 +242,26 @@ def verified_attempt(case: dict) -> dict:
             or sha256_file(manifest) != attempt["verification_manifest_sha256"]):
         raise RecoveryError("VerifiedCaseChanged", "PA 검증에 사용한 입력·대상 기록이 변경됐습니다.")
     result = attempt["result"]
-    active = result.get("active_config", {})
-    selected = result.get("analysis_evidence", {}).get("selected_tus", [])
-    if (result.get("workspace") != str(workspace)
-            or result.get("exit_code") != 0
-            or active.get("path") != str(conf)
-            or active.get("sha256") != attempt["conf_sha256"]
-            or active.get("compiler_id") != case["compiler_id"]
-            or active.get("database_reference_verified") is not True
-            or not isinstance(selected, list)
-            or any(not isinstance(item, dict) or type(item.get("tu_id")) is not int for item in selected)
-            or sorted(item.get("tu_id", -1) for item in selected) != sorted(case["selected_tu_ids"])):
-        raise RecoveryError("PaEvidenceMismatch", "PA 결과의 설정·컴파일러·대상 기록이 현재 검증 자료와 다릅니다.")
+    remote = attempt.get("remote", {})
+    from .evidence import read_preserved_text
+    text, _, _ = read_preserved_text(portable)
+    request = remote.get("request", {})
+    collection = case.get("collection", {})
+    from .cover_api import CoverOpenApiClient
+    try:
+        CoverOpenApiClient._run_id(remote.get("run_id"))
+    except RecoveryError:
+        raise RecoveryError("PaEvidenceMismatch", "검증된 서버 runId가 없습니다.") from None
+    if (result.get("mode") != "server" or result.get("server_status") != "SUCCEEDED"
+            or remote.get("status") != "SUCCEEDED" or remote.get("pending")
+            or result.get("run_id") != remote.get("run_id")
+            or result.get("conf_sha256") != attempt["portable_conf_sha256"]
+            or result.get("request_digest") != digest_json(request)
+            or remote.get("request_digest") != digest_json(request)
+            or remote.get("server_url") != collection.get("server_url")
+            or request.get("macAddress") != collection.get("hardware_id")
+            or request.get("sourceFilePath") != case["source_path"]
+            or request.get("compilerId") != case["compiler_id"]
+            or request.get("toolChainContent") != text.splitlines()):
+        raise RecoveryError("PaEvidenceMismatch", "서버 검증의 실행·설정·대상 기록이 현재 자료와 다릅니다.")
     return attempt

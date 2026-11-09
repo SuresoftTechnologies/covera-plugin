@@ -31,6 +31,7 @@ SKIP_DIRS = {
 }
 CI_DIR_NAMES = {".github", ".gitlab", ".jenkins", "ci"}
 SCRIPT_SUFFIXES = {".bat", ".cmd", ".ps1", ".sh"}
+SCRIPT_SKIP_DIRS = SKIP_DIRS | {".cover-ee", ".venv", "venv", "vendor", "third_party", "third-party"}
 YAML_SUFFIXES = {".yaml", ".yml"}
 MAX_LISTED_PATHS = 200
 ROOT_BUILD_COMMAND_FILES = {
@@ -113,7 +114,8 @@ def _is_build_command_evidence_file(relative_path: Path) -> bool:
 
 
 def _java_build_command_evidence(path: Path, relative_path: Path) -> list[dict[str, object]]:
-    if not _is_build_command_evidence_file(relative_path):
+    if not (_is_build_command_evidence_file(relative_path) or
+            relative_path.suffix.casefold() in SCRIPT_SUFFIXES):
         return []
     try:
         text = path.read_text(encoding="utf-8-sig", errors="replace")[: 512 * 1024]
@@ -136,6 +138,36 @@ def _java_build_command_evidence(path: Path, relative_path: Path) -> list[dict[s
                     }
                 )
     return evidence
+
+
+def _is_java_build_script(path: Path) -> bool:
+    """Collect script candidates; the model still resolves arguments and source flow."""
+    if path.suffix.casefold() not in SCRIPT_SUFFIXES:
+        return False
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as stream:
+            text = stream.read(512 * 1024)
+    except OSError:
+        return False
+    for match in re.finditer(
+        r'(?im)^[ \t]*@?(?:call\s+|&\s*)?(?:"([^"\r\n]+)"|\'([^\'\r\n]+)\'|([^\s]+))', text,
+    ):
+        token = next(value for value in match.groups() if value is not None)
+        rest = text[match.end():].split("\n", 1)[0]
+        if "=" in token or rest.lstrip().startswith("="):
+            continue
+        name = token.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        if re.fullmatch(r"(?:javac|java|ant)(?:\.exe|\.cmd|\.bat)?", name):
+            return True
+        if Path(name).suffix in SCRIPT_SUFFIXES:
+            return True
+        # Indirect execution remains a candidate for model review, not a confirmed build.
+        if re.search(r"%[^%]+%|\$(?:[A-Za-z_]|\{)", token):
+            return True
+        if name in {"sh", "bash", "pwsh", "pwsh.exe", "powershell", "powershell.exe"}:
+            if re.search(r'(?i)\.(?:bat|cmd|ps1|sh)(?=["\'\s]|$)', rest):
+                return True
+    return False
 
 
 def _first_option(line: str, patterns: tuple[str, ...]) -> str | None:
@@ -348,6 +380,8 @@ def detect_managed(root: Path, index: dict[str, Any] | None = None) -> dict:
     native_build_entries: list[str] = []
     maven_files: list[str] = []
     gradle_files: list[str] = []
+    java_build_scripts: list[str] = []
+    script_files: list[str] = []
     java_build_command_evidence: list[dict[str, object]] = []
     csharp_build_command_evidence: list[dict[str, object]] = []
     runtime_candidates: list[str] = []
@@ -385,7 +419,15 @@ def detect_managed(root: Path, index: dict[str, Any] | None = None) -> dict:
                 gradle_files.append(relative_text)
             if _is_runtime_candidate(relative):
                 runtime_candidates.append(relative_text)
-            java_build_command_evidence.extend(_java_build_command_evidence(path, relative))
+            eligible_script = (suffix in SCRIPT_SUFFIXES and
+                               not any(part.casefold() in SCRIPT_SKIP_DIRS for part in relative.parts[:-1]))
+            if eligible_script:
+                script_files.append(relative_text)
+            java_commands = (_java_build_command_evidence(path, relative)
+                             if suffix not in SCRIPT_SUFFIXES or eligible_script else [])
+            java_build_command_evidence.extend(java_commands)
+            if eligible_script and not java_commands and _is_java_build_script(path):
+                java_build_scripts.append(relative_text)
             csharp_build_command_evidence.extend(_csharp_build_command_evidence(path, relative))
 
     csharp_source_list, csharp_truncated = _limited(csharp_sources)
@@ -417,12 +459,14 @@ def detect_managed(root: Path, index: dict[str, Any] | None = None) -> dict:
         java_build_system_candidates.append("MAVEN")
     if gradle_files:
         java_build_system_candidates.append("GRADLE")
+    if java_detected and java_build_scripts:
+        java_build_system_candidates.append("BUILD_SCRIPT")
     if java_sources and not java_build_system_candidates:
         java_build_system_candidates.append("COMMAND_LINE_CANDIDATE")
     confirmed_build_systems = _sort_paths(
         item["buildSystem"] for item in java_build_command_evidence if item["buildSystem"] in java_build_system_candidates
     )
-    if len(confirmed_build_systems) == 1:
+    if len(confirmed_build_systems) == 1 and "BUILD_SCRIPT" not in java_build_system_candidates:
         build_system_decision = "CONFIRMED_BY_PROJECT_COMMAND"
     else:
         build_system_decision = "MODEL_OR_USER_REQUIRED"
@@ -437,14 +481,17 @@ def detect_managed(root: Path, index: dict[str, Any] | None = None) -> dict:
     csharp_build_system_candidates: list[str] = []
     if csharp_projects:
         csharp_build_system_candidates.append("MSBUILD")
-    if any(record["sdkStyle"] for record in csharp_frameworks) or csharp_global_json:
+    if not solutions and (any(record["sdkStyle"] for record in csharp_frameworks) or csharp_global_json):
         csharp_build_system_candidates.append("DOTNET")
     confirmed_csharp_build_systems = _sort_paths(
         item["buildSystem"]
         for item in csharp_build_command_evidence
         if item["buildSystem"] in csharp_build_system_candidates
     )
-    if len(confirmed_csharp_build_systems) == 1:
+    if solutions and csharp_projects:
+        confirmed_csharp_build_systems = ["MSBUILD"]
+        csharp_build_system_decision = "SOLUTION_REQUIRES_VISUAL_STUDIO_MSBUILD"
+    elif len(confirmed_csharp_build_systems) == 1:
         csharp_build_system_decision = "CONFIRMED_BY_PROJECT_COMMAND"
     else:
         csharp_build_system_decision = "MODEL_OR_USER_REQUIRED"
@@ -502,6 +549,8 @@ def detect_managed(root: Path, index: dict[str, Any] | None = None) -> dict:
             "commandEvidence": java_build_command_evidence,
             "mavenFiles": _sort_paths(maven_files),
             "gradleFiles": _sort_paths(gradle_files),
+            "buildScriptFiles": _sort_paths(java_build_scripts) if java_detected else [],
+            "scriptFiles": _sort_paths(script_files) if java_detected else [],
         },
         "runtimeEvidence": {
             "candidateFiles": runtime_list,

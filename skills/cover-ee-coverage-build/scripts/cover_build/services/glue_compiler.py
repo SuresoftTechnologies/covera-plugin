@@ -11,7 +11,7 @@ from typing import Any
 
 from cover_build.core.errors import WorkflowWaiting
 from cover_build.common import pathutil
-from cover_build.common import toolchains
+from cover_build.services import toolchains
 from cover_build.core import errors
 
 

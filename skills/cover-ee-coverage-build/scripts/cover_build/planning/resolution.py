@@ -12,7 +12,7 @@ from cover_build.core.errors import WorkflowWaiting
 from cover_build.common.pathutil import canonical
 from cover_build.common.fileio import write_json
 from cover_build.core.job_evidence import WORKFLOW_SCHEMA
-from cover_build.planning import build_plan
+from cover_build.planning import build_plan, execution_environment
 from cover_build.common import fileio
 from cover_build.common import pathutil
 from cover_build.core import errors
@@ -66,6 +66,10 @@ def load_decision(path: str | None, job: dict[str, Any]) -> tuple[dict[str, Any]
         raise errors.ExecutorError("INVALID_WORKFLOW_DECISION", "resolution.action must be RESOLVE or ESCALATE_TO_USER")
     if resolution.get("action") == "ESCALATE_TO_USER" and resolution.get("owner") != "MODEL":
         raise errors.ExecutorError("INVALID_WORKFLOW_DECISION", "Only the model can escalate its unresolved decision to the user")
+    if ({"wrapperMappingChangeApproval", "archivePolicyApproval"} & choices.keys()) and (
+        value.get("decisionOwner") != "USER" or resolution.get("owner") != "USER" or resolution.get("action") != "RESOLVE"
+    ):
+        raise errors.ExecutorError("INVALID_WORKFLOW_DECISION", "Agent configuration changes require an explicit USER decision")
     return choices, resolution
 
 def load_decision_history(job: dict[str, Any]) -> dict[str, Any]:
@@ -163,6 +167,23 @@ def waiting(job: dict[str, Any], stages: list[dict[str, Any]], exc: WorkflowWait
     state = "WAITING_MODEL_DECISION" if exc.decision_owner == "MODEL" else "WAITING_USER_INPUT"
     fallback_owner = "USER" if exc.decision_owner == "MODEL" and exc.purpose in MODEL_FALLBACK_PURPOSES else None
     attempted_by = ["SCRIPT"] if exc.decision_owner == "MODEL" else ["SCRIPT", "MODEL"] if exc.purpose in MODEL_FALLBACK_PURPOSES else ["SCRIPT"]
+    model_owned = exc.decision_owner == "MODEL"
+    continuation = {
+        "action": "RESOLVE_AND_RESUME" if model_owned else "REQUEST_USER_INPUT",
+        "owner": exc.decision_owner,
+        "jobContext": str(Path(job["jobDirectory"]) / "job.json"),
+        "instructions": (
+            "This is an intermediate model decision, not a final result. Read the cited evidence, "
+            "submit a supported decision, and resume the same job with --execute. Continue this "
+            "decision/resume loop for subsequent MODEL requests; do not end the conversation or "
+            "ask the user to perform model reasoning. If evidence is insufficient, investigate it; "
+            "escalate only a concrete missing user input or authorization. Do not repeat an "
+            "unchanged rejected decision or bypass validation."
+            if model_owned else
+            "Request the missing user input or authorization described by this result; do not "
+            "invent approval. Resume the same job after receiving it."
+        ),
+    }
     template = fileio.add_integrity(
         {
             "schema": DECISION_SCHEMA,
@@ -176,6 +197,9 @@ def waiting(job: dict[str, Any], stages: list[dict[str, Any]], exc: WorkflowWait
             "resolution": {"action": "RESOLVE", "owner": exc.decision_owner, "reason": None},
             "choices": _choice_specifications(exc.choices),
             "evidence": exc.evidence,
+            "executionHost": execution_environment.host_context(),
+            "planningPolicy": "Plan for the current executionHost OS from the outset. Select commands, tools, shell and setup supported there using available project evidence. CI is optional evidence, not a required input or a preferred command. Do not infer compatibility from file extensions alone.",
+            "continuation": continuation,
             "instructions": "Use cover_workflow_runner.py decision to create decision.json, then resume the same job.json with --decision decision.json.",
         }
     )
@@ -193,6 +217,9 @@ def waiting(job: dict[str, Any], stages: list[dict[str, Any]], exc: WorkflowWait
         "attemptedBy": attempted_by,
         "reason": {"code": exc.code, "message": exc.message},
         "decisionTemplate": str(decision_path),
+        "continuation": continuation,
+        "executionHost": template["executionHost"],
+        "planningPolicy": template["planningPolicy"],
         "stages": stages,
     }
     build_reporting.attach(job, result)

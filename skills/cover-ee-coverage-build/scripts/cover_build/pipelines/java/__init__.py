@@ -6,23 +6,23 @@ import json
 import os
 import re
 import shutil
-import zipfile
 import socket
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Callable
 
 import managed_tools
 import project_index
 
 from cover_build.core import state_store
+from cover_build.core.job_evidence import with_output_tracking
 from cover_build.core.errors import WorkflowWaiting
-from cover_build.planning.selection import java_build_entries
+from cover_build.planning.selection import java_build_entries, java_build_systems
+from cover_build.planning import option_recovery
 from cover_build.pipelines.managed_common import (
     _absolute_entry,
     _command_spec,
-    _coverage_artifacts,
     _executable,
     _managed_plan,
     _project_wrapper,
@@ -36,10 +36,13 @@ from cover_build.common import fileio
 from cover_build.common import pathutil
 from cover_build.common import processes
 from cover_build.core import errors
+from cover_build.pipelines.java import cli, build_runtime
+
+from . import maven
+from . import gradle
 
 
 LOCAL_AGENT_STATIC_FILES = ("bin/agent-config.yaml",)
-MAVEN_JAVALIB_LEGACY_GROUP_ID = "com.codescroll.tm"
 JAVA_RUNTIME_MODES = ("LOWER", "JAVA_AGENT")
 
 
@@ -241,57 +244,6 @@ def _jacov_artifact(
     return pathutil.canonical(record["path"])
 
 
-GRADLE_OBSERVATION = '''
-allprojects {
-    tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {
-        doFirst {
-            def compiler = javaCompiler.get()
-            println("COVER_OBS_JAVA_HOME=" + compiler.metadata.installationPath.asFile.absolutePath)
-            println("COVER_OBS_JAVA_VERSION=" + compiler.metadata.languageVersion.asInt())
-        }
-    }
-    tasks.withType(org.gradle.api.tasks.bundling.AbstractArchiveTask).configureEach {
-        doLast { println("COVER_OBS_ARTIFACT=" + archiveFile.get().asFile.absolutePath) }
-    }
-}
-'''
-
-
-def _gradle_observer(job: dict[str, Any]) -> Path:
-    path = Path(job["directories"]["temporary"]) / "observe-gradle.gradle"
-    if not path.is_file() or path.read_text(encoding="utf-8") != GRADLE_OBSERVATION:
-        path.write_text(GRADLE_OBSERVATION, encoding="utf-8")
-    return path
-
-
-def _gradle_coverage_script(job: dict[str, Any], tool: Path) -> Path:
-    source = tool.parent / "jacov-gradle-init.gradle"
-    if not source.is_file():
-        raise errors.ExecutorError("JACOV_GRADLE_INIT_SCRIPT_INVALID", "Installed Gradle init script is missing", [str(source)])
-    target = Path(job["directories"]["temporary"]) / "jacov-gradle-init.gradle"
-    contents = source.read_text(encoding="utf-8-sig")
-    contents = _replace_gradle_jar(contents, tool)
-    target.write_text(contents + "\n" + GRADLE_OBSERVATION, encoding="utf-8")
-    return target
-
-
-def _replace_gradle_jar(contents: str, tool: Path) -> str:
-    escaped = str(tool).replace("\\", "/").replace("'", "\\'")
-    pattern = r'''classpath\s+files\(\s*["'][^"'\r\n]*jacov-gradle-plugin[^"'\r\n]*\.jar["']\s*\)'''
-    updated, count = re.subn(pattern, lambda _: f"classpath files('{escaped}')", contents)
-    if count != 1:
-        raise errors.ExecutorError("JACOV_GRADLE_INIT_SCRIPT_INVALID", "Expected exactly one JACOV plugin classpath in init script")
-    return updated
-
-
-def _without_observer(arguments: list[str], observer: Path) -> list[str]:
-    result = list(arguments)
-    for i in range(len(result) - 1):
-        if result[i] == "--init-script" and result[i + 1] == str(observer):
-            return result[:i] + result[i + 2:]
-    return result
-
-
 def _postbuild_choices(job: dict[str, Any], choices: dict[str, Any], command: dict[str, Any],
                        install: dict[str, Any], system: str) -> dict[str, Any]:
     unresolved: dict[str, Any] = {}
@@ -310,8 +262,12 @@ def _postbuild_choices(job: dict[str, Any], choices: dict[str, Any], command: di
         found["tool"] = str(_jacov_artifact(install, system, found.get("major", 0), choices.get("jacovTool")))
     except WorkflowWaiting as exc:
         unresolved.update(exc.choices)
-    if system == "COMMAND_LINE_CANDIDATE" and not choices.get("javaCoverageArguments"):
-        unresolved["javaCoverageArguments"] = []
+    if system == "COMMAND_LINE_CANDIDATE" and not choices.get("javaCliIntegration"):
+        unresolved["javaCliIntegration"] = {}
+    try:
+        found["buildRuntime"] = build_runtime.validate_plan(choices.get("javaBuildRuntime"), system)
+    except WorkflowWaiting as exc:
+        unresolved.update(exc.choices)
     if unresolved:
         raise WorkflowWaiting("JAVA_POSTBUILD_DECISION_BUNDLE_REQUIRED",
                               "원본 빌드에서 확정하지 못한 Java 도구와 산출물을 함께 선택한다.",
@@ -343,178 +299,30 @@ def _recover_missing_artifacts(artifacts: list[Path], spec: dict[str, Any], logs
 
 
 def _verified_coverage(job: dict[str, Any], stages: list, record: Callable, artifacts: list[Path],
-                       coverage_spec: dict[str, Any], original_spec: dict[str, Any]) -> dict[str, Any]:
-    before = Path(job["directories"]["temporary"]) / "java-artifacts-before.json"
-    after = Path(job["directories"]["temporary"]) / "java-artifacts-after.json"
-    processes.snapshot_artifacts(SimpleNamespace(artifact=[str(p) for p in artifacts], output=str(before)))
+                       coverage_spec: dict[str, Any], original_spec: dict[str, Any],
+                       before_recovery: Callable[[], None] | None = None,
+                       runtime_plan: dict | None = None) -> dict[str, Any]:
     try:
         coverage = _run(coverage_spec, Path(job["directories"]["logs"]) / "coverage-java.log", "COVERAGE_BUILD_FAILED")
-        proof = _java_instrumentation_proof(Path(coverage["log"]))
-        outputs = _coverage_artifacts(job, coverage, {".jar", ".war"}, artifacts)
-        processes.snapshot_artifacts(SimpleNamespace(artifact=[str(p) for p in artifacts], output=str(after)))
-        verification = processes.verify_artifacts(SimpleNamespace(before=str(before), after=str(after), output=None))
-        comparison = pathutil.require_same_output_paths(artifacts, outputs)
-        verification["data"]["outputPathComparison"] = comparison
+        outputs = artifacts
     except (errors.ExecutorError, KeyboardInterrupt) as error:
+        if before_recovery is not None:
+            before_recovery()
         try:
             recovery = _recover_missing_artifacts(artifacts, original_spec, Path(job["directories"]["logs"]))
             record(job, stages, 13, "recover-java-artifacts", envelopes.envelope("RECOVERING_JAVA_ARTIFACTS", "SUCCEEDED", recovery))
         except errors.ExecutorError as recovery_error:
             record(job, stages, 13, "recover-java-artifacts", envelopes.envelope("RECOVERING_JAVA_ARTIFACTS", "FAILED", {"errorCode": recovery_error.code}))
             error.add_note(f"Recovery failed: {recovery_error.code}")
+            raise error
+        if isinstance(error, errors.ExecutorError):
+            build_runtime.replan_after_failure(job, runtime_plan, error)
         raise
     return envelopes.envelope("EXECUTING_JAVA_COVERAGE_BUILD", "SUCCEEDED", {
         "results": [coverage], "artifacts": [str(p) for p in outputs],
-        "outputHashes": {str(p): pathutil.sha256_file(p) for p in outputs},
-        "artifactVerification": verification, "outputPathComparison": comparison,
-        "instrumentationProof": proof,
+        "successCriterion": "BUILD_EXIT_CODE",
         "buildInterval": {"startedAt": coverage["startedAt"], "finishedAt": coverage["finishedAt"]},
     })
-
-
-def _coverage_outputs_unchanged(result: dict[str, Any]) -> bool:
-    hashes = result.get("data", {}).get("outputHashes") or {}
-    return bool(hashes) and all(Path(p).is_file() and pathutil.sha256_file(Path(p)) == sha for p, sha in hashes.items())
-
-
-def _maven_install_once(job: dict[str, Any], stages: list, record: Callable, name: str,
-                        spec: dict[str, Any], source: Path, installed: Path) -> dict[str, Any]:
-    source_hash = pathutil.sha256_file(source)
-    def action():
-        command = _run(spec, Path(job["directories"]["logs"]) / f"{name}.log", "JACOV_MAVEN_PLUGIN_INSTALL_FAILED")
-        if not installed.is_file() or pathutil.sha256_file(installed) != source_hash:
-            raise errors.ExecutorError("JACOV_MAVEN_PLUGIN_INSTALL_FAILED", "Maven local repository does not contain the selected JAR", [str(installed)])
-        return envelopes.envelope("INSTALLING_MAVEN_ARTIFACT", "SUCCEEDED", command)
-    return state_store.run_checkpointed(job, stages, record, 12, name,
-        {"command": spec, "jarSha256": source_hash, "destination": str(installed)}, action,
-        validate=lambda _: installed.is_file() and pathutil.sha256_file(installed) == source_hash)["data"]
-
-
-def _maven_plugin_record(install: dict[str, Any], tool: Path) -> dict[str, str]:
-    record = next(
-        (item for item in install["binArtifacts"] if item.get("exists") and pathutil.same_path(str(item["path"]), tool)),
-        None,
-    )
-    plugin = record.get("mavenPlugin") if isinstance(record, dict) else None
-    required = ("groupId", "artifactId", "version", "pomPath")
-    if not isinstance(plugin, dict) or not all(isinstance(plugin.get(key), str) and plugin[key] for key in required):
-        raise errors.ExecutorError(
-            "JACOV_MAVEN_PLUGIN_METADATA_INVALID",
-            "The selected JACOV Maven plugin has no complete embedded Maven coordinate and POM",
-            [str(tool)],
-        )
-    return {key: str(plugin[key]) for key in required}
-
-
-def _extract_maven_plugin_pom(tool: Path, plugin: dict[str, str], temporary: Path) -> dict[str, Any]:
-    target = temporary / "jacov-maven-plugin.pom.xml"
-    try:
-        with zipfile.ZipFile(tool) as archive:
-            contents = archive.read(plugin["pomPath"])
-    except (KeyError, OSError, zipfile.BadZipFile) as exc:
-        raise errors.ExecutorError("JACOV_MAVEN_PLUGIN_POM_MISSING", "The selected JACOV Maven plugin POM cannot be extracted", [str(tool)]) from exc
-    target.write_bytes(contents)
-    return {"path": str(target), "sha256": pathutil.sha256_file(target), "size": len(contents)}
-
-
-def _maven_plugin_coordinate_is_used(arguments: list[str], plugin: dict[str, str]) -> bool:
-    coordinate = f"{plugin['groupId']}:{plugin['artifactId']}:{plugin['version']}:"
-    return any(coordinate in argument for argument in arguments)
-
-
-def _maven_local_repository(job: dict[str, Any], arguments: list[str]) -> Path:
-    """Use Maven's normal user local repository unless the customer chose one explicitly."""
-    prefix = "-Dmaven.repo.local="
-    for index, argument in enumerate(arguments):
-        if argument.startswith(prefix) and argument[len(prefix):]:
-            return pathutil.canonical(argument[len(prefix):])
-        if argument == "-Dmaven.repo.local" and index + 1 < len(arguments):
-            return pathutil.canonical(arguments[index + 1])
-    return pathutil.canonical(Path.home() / ".m2" / "repository")
-
-
-def _maven_repository_argument(arguments: list[str], repository: Path) -> list[str]:
-    """Preserve the normal Maven repository; replace only an explicitly selected repository."""
-    if pathutil.same_path(str(repository), str(Path.home() / ".m2" / "repository")) and not any(
-        argument.startswith("-Dmaven.repo.local=") or argument == "-Dmaven.repo.local"
-        for argument in arguments
-    ):
-        return list(arguments)
-    result: list[str] = []
-    skip_next = False
-    for index, argument in enumerate(arguments):
-        if skip_next:
-            skip_next = False
-            continue
-        if argument.startswith("-Dmaven.repo.local="):
-            continue
-        if argument == "-Dmaven.repo.local" and index + 1 < len(arguments):
-            skip_next = True
-            continue
-        result.append(argument)
-    return [f"-Dmaven.repo.local={repository}", *result]
-
-
-def _maven_repository_prefix(repository: Path) -> list[str]:
-    """install_maven_plugin.cmd uses Maven's default repository unless one was selected."""
-    if pathutil.same_path(str(repository), str(Path.home() / ".m2" / "repository")):
-        return []
-    return [f"-Dmaven.repo.local={repository}"]
-
-
-def _maven_install_context(arguments: list[str]) -> list[str]:
-    """Keep the Maven settings and offline policy that governed the original build."""
-    result: list[str] = []
-    value_options = {"-s", "--settings", "-gs", "--global-settings"}
-    index = 0
-    while index < len(arguments):
-        argument = arguments[index]
-        if argument in value_options and index + 1 < len(arguments):
-            result.extend([argument, arguments[index + 1]])
-            index += 2
-            continue
-        if argument.startswith(("-s", "-gs", "--settings=", "--global-settings=")) or argument in {"-o", "--offline", "-nsu", "--no-snapshot-updates"}:
-            result.append(argument)
-        index += 1
-    return result
-
-
-def _maven_plugin_install_spec(
-    executable: Path,
-    entry: Path,
-    repository: Path,
-    tool: Path,
-    plugin: dict[str, str],
-    context: list[str],
-) -> dict[str, Any]:
-    """Match install_maven_plugin.cmd: install the fat JAR with a generated minimal POM."""
-    return _command_spec(
-        executable,
-        [
-            *_maven_repository_prefix(repository),
-            *context,
-            "install:install-file",
-            f"-Dfile={tool}",
-            f"-DgroupId={plugin['groupId']}",
-            f"-DartifactId={plugin['artifactId']}",
-            f"-Dversion={plugin['version']}",
-            "-Dpackaging=maven-plugin",
-            "-DgeneratePom=true",
-        ],
-        entry.parent,
-        coverage=True,
-    )
-
-
-def _require_javalib_lower(install_root: Path) -> Path:
-    runtime = pathutil.canonical(install_root / "bin" / "tm-javalib-lower.jar")
-    if not runtime.is_file():
-        raise errors.ExecutorError(
-            "JACOV_RUNTIME_LIBRARY_MISSING",
-            "The LOWER Java runtime requires the installed tm-javalib-lower.jar",
-            [str(runtime)],
-        )
-    return runtime
 
 
 def _java_runtime_mode(choices: dict[str, Any], execution_arguments: list[str] | None = None) -> str:
@@ -570,158 +378,6 @@ def _java_runtime_mode(choices: dict[str, Any], execution_arguments: list[str] |
     return selected
 
 
-def _maven_javalib_argument(arguments: list[str], enabled: bool) -> list[str]:
-    property_name = "-Dmaven.jacov.addDependencyJavaLib"
-    filtered = [
-        argument for argument in arguments
-        if argument != property_name and not argument.startswith(f"{property_name}=")
-    ]
-    return [f"{property_name}={str(enabled).lower()}", *filtered]
-
-
-def _maven_javalib_metadata(runtime: Path) -> dict[str, Any]:
-    try:
-        with zipfile.ZipFile(runtime) as archive:
-            names = [
-                name for name in archive.namelist()
-                if name.endswith("/tm-javalib-lower/pom.properties")
-            ]
-            if len(names) != 1:
-                raise KeyError("tm-javalib-lower pom.properties")
-            properties = {}
-            for line in archive.read(names[0]).decode("utf-8-sig").splitlines():
-                if "=" in line and not line.lstrip().startswith("#"):
-                    key, value = line.split("=", 1)
-                    properties[key.strip()] = value.strip()
-    except (KeyError, OSError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
-        raise errors.ExecutorError(
-            "JACOV_RUNTIME_LIBRARY_METADATA_INVALID",
-            "tm-javalib-lower.jar has no usable Maven metadata",
-            [str(runtime)],
-        ) from exc
-    if properties.get("artifactId") != "tm-javalib-lower" or not properties.get("version"):
-        raise errors.ExecutorError(
-            "JACOV_RUNTIME_LIBRARY_METADATA_INVALID",
-            "tm-javalib-lower.jar Maven metadata is incomplete",
-            [str(runtime)],
-        )
-    groups = []
-    # The installed JAR exposes the current coordinate while the 4sp8 Maven plugin
-    # resolves the runtime through this legacy group ID. Register both locally.
-    for group in (properties.get("groupId"), MAVEN_JAVALIB_LEGACY_GROUP_ID):
-        if group and group not in groups:
-            groups.append(group)
-    return {
-        "artifactId": properties["artifactId"],
-        "version": properties["version"],
-        "groupIds": groups,
-    }
-
-
-def _maven_javalib_install_specs(
-    executable: Path,
-    entry: Path,
-    repository: Path,
-    runtime: Path,
-    metadata: dict[str, Any],
-    context: list[str],
-) -> list[dict[str, Any]]:
-    return [
-        _command_spec(
-            executable,
-            [
-                *_maven_repository_prefix(repository),
-                *context,
-                "install:install-file",
-                f"-Dfile={runtime}",
-                f"-DgroupId={group_id}",
-                f"-DartifactId={metadata['artifactId']}",
-                f"-Dversion={metadata['version']}",
-                "-Dpackaging=jar",
-                "-DgeneratePom=true",
-            ],
-            entry.parent,
-            coverage=True,
-        )
-        for group_id in metadata["groupIds"]
-    ]
-
-
-def _gradle_init_script(arguments: list[str]) -> Path:
-    candidates: list[str] = []
-    for index, argument in enumerate(arguments):
-        if argument in {"--init-script", "-I"} and index + 1 < len(arguments):
-            candidates.append(arguments[index + 1])
-        elif argument.startswith("--init-script="):
-            candidates.append(argument.split("=", 1)[1])
-    if len(candidates) != 1:
-        raise errors.ExecutorError(
-            "JACOV_GRADLE_INIT_SCRIPT_UNRESOLVED",
-            "Gradle coverage arguments must select exactly one job-local init script",
-            arguments,
-        )
-    selected = Path(candidates[0])
-    if not selected.is_absolute():
-        raise errors.ExecutorError(
-            "JACOV_GRADLE_INIT_SCRIPT_NOT_ABSOLUTE",
-            "The job-local Gradle init script path must be absolute",
-            [str(selected)],
-        )
-    return pathutil.canonical(selected)
-
-
-def _set_gradle_system_property(contents: str, name: str, value: str) -> str:
-    expression = re.compile(
-        rf"(?m)^[ \t]*System\.setProperty\(\s*['\"]{re.escape(name)}['\"]\s*,\s*['\"][^'\"]*['\"]\s*\)[ \t]*$"
-    )
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
-    replacement = f'System.setProperty("{name}", "{escaped}")'
-    updated, count = expression.subn(replacement, contents)
-    if count > 1:
-        raise errors.ExecutorError(
-            "JACOV_GRADLE_PROPERTY_AMBIGUOUS",
-            f"The job-local Gradle init script defines {name} more than once",
-        )
-    return updated if count == 1 else f"{replacement}\n{contents}"
-
-
-def _maven_install_executable(install_root: Path, build_executable: Path) -> Path:
-    candidates = (
-        install_root / "utils" / "apache-maven" / "bin" / "mvn.cmd",
-        install_root / "utils" / "apache-maven" / "bin" / "mvn",
-    )
-    return next((pathutil.canonical(path) for path in candidates if path.is_file()), build_executable)
-
-
-def _prepare_gradle_runtime(arguments: list[str], job: dict[str, Any]) -> dict[str, Any]:
-    init_script = _gradle_init_script(arguments)
-    temporary = pathutil.canonical(job["directories"]["temporary"])
-    if not init_script.is_file() or not pathutil.path_within(init_script, temporary):
-        raise errors.ExecutorError(
-            "JACOV_GRADLE_INIT_SCRIPT_NOT_JOB_LOCAL",
-            "Only the job-local Gradle init script may be changed for JACOV coverage",
-            [str(init_script), str(temporary)],
-        )
-    try:
-        contents = init_script.read_text(encoding="utf-8-sig")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise errors.ExecutorError(
-            "JACOV_GRADLE_INIT_SCRIPT_INVALID",
-            "The job-local Gradle init script cannot be read",
-            [str(init_script)],
-        ) from exc
-    contents = _set_gradle_system_property(contents, "jacov.addDependencyJavaLib", "false")
-    contents = _set_gradle_system_property(contents, "jacov.javaLibJarDir", "")
-    init_script.write_text(contents, encoding="utf-8")
-    return {
-        "mode": "GRADLE_COVERAGE_INSTRUMENTATION",
-        "runtimeSelection": "DEFERRED_TO_EXECUTION",
-        "initScript": str(init_script),
-        "addDependencyJavaLib": False,
-        "javaLibJarDir": "",
-    }
-
-
 def _java_execution_guidance(install_root: Path, runtime_dependency: dict[str, Any] | None) -> dict[str, Any]:
     runtime = pathutil.canonical(install_root / "bin" / "tm-javalib-lower.jar", False)
     generated_agent = pathutil.canonical(
@@ -775,97 +431,52 @@ def _java_execution_guidance(install_root: Path, runtime_dependency: dict[str, A
     }
 
 
-def _java_instrumentation_proof(log: Path) -> dict[str, Any]:
-    result_pattern = re.compile(
-        r"## JAVA SOURCE COVERAGE BUILD RESULTS ##.*?"
-        r"\[\s*SUCCESS\s*\]\s*:\s*(\d+).*?"
-        r"\[\s*FAILURE\s*\]\s*:\s*(\d+).*?"
-        r"\[\s*IGNORE\s*\]\s*:\s*(\d+)",
-        re.IGNORECASE | re.DOTALL,
-    )
-    text = "\n".join(processes.iter_output_lines(log))
-    aggregate_results = [
-        {"success": int(success), "failure": int(failure), "ignore": int(ignore)}
-        for success, failure, ignore in result_pattern.findall(text)
-    ]
-    file_result_pattern = re.compile(
-        r"^\s*\[\s*(SUCCESS|FAILURE|IGNORE)\s*\]\s*:\s*(.+?\.java)(?:\s+\(Cause\s*:.*)?\s*$",
-        re.IGNORECASE,
-    )
 
-    def path_key(value: str) -> str:
-        return re.sub(r"/+", "/", value.strip().replace("\\", "/")).rstrip("/").casefold()
+@dataclass(frozen=True, kw_only=True)
+class OriginalPlan:
+    plan: dict[str, Any]
+    system: str
+    entry: Path
+    executable: Path
+    spec: dict[str, Any]
+    observer: Path | None
 
-    file_results: list[dict[str, str]] = []
-    active_gradle_source_root: str | None = None
-    maven_jacov_block = False
-    uploaded_sources: set[str] = set()
-    for line in text.splitlines():
-        if re.match(r"^\s*>\s*Task\s+", line, re.IGNORECASE):
-            active_gradle_source_root = None
-        instrumenting = re.search(r"\[COVER\]\s+Instrumenting\s*:\s*(.+?)\s+->", line, re.IGNORECASE)
-        if instrumenting:
-            active_gradle_source_root = path_key(instrumenting.group(1))
-        maven_plugin = re.match(r"^\s*\[INFO\]\s+---\s+(.+?)\s+---\s*$", line, re.IGNORECASE)
-        if maven_plugin:
-            maven_jacov_block = bool(re.search(r"\bjacov:[^:\s]+:setup\b", maven_plugin.group(1), re.IGNORECASE))
-        uploaded = re.search(r"uploadJavaAnalyzeInfo\s*:\s*[^,]+,\s*(.+?\.java)(?:\s|$)", line, re.IGNORECASE)
-        if uploaded:
-            uploaded_sources.add(path_key(uploaded.group(1)))
-        file_result = file_result_pattern.match(line)
-        if not file_result:
-            continue
-        status, source = file_result.groups()
-        source_key = path_key(source)
-        from_gradle_instrumentation = bool(
-            active_gradle_source_root
-            and (source_key == active_gradle_source_root or source_key.startswith(active_gradle_source_root + "/"))
-        )
-        if maven_jacov_block or source_key in uploaded_sources or from_gradle_instrumentation:
-            file_results.append({"status": status.upper(), "source": source.strip()})
-    file_counts = {
-        status: sum(1 for item in file_results if item["status"] == status)
-        for status in ("SUCCESS", "FAILURE", "IGNORE")
-    }
-    jacov_file_result_context = bool(file_results)
-    if aggregate_results:
-        result_format = "AGGREGATE"
-        success = sum(item["success"] for item in aggregate_results)
-        failure = max(sum(item["failure"] for item in aggregate_results), file_counts["FAILURE"])
-        ignored = sum(item["ignore"] for item in aggregate_results)
-    else:
-        result_format = "FILE_RESULTS" if file_results else "NONE"
-        success = file_counts["SUCCESS"]
-        failure = file_counts["FAILURE"]
-        ignored = file_counts["IGNORE"]
-    skip_marker = bool(re.search(r"(?:Skipping jacov instrumentation|Instrumentation skipped|No valid source directories)", text, re.IGNORECASE))
-    error_marker = bool(re.search(r"(?:\[COVER(?:\(Jacov\))?\].*(?:error|invalid)|COVER\(Jacov\).*failed)", text, re.IGNORECASE))
-    if success <= 0 or failure or skip_marker or error_marker or (not aggregate_results and not jacov_file_result_context):
-        raise errors.ExecutorError(
-            "JACOV_PROCESSING_NOT_PROVED",
-            "The coverage build did not report a successful, non-skipped JACOV source-processing result",
-            [str(log)],
-        )
-    return {
-        "kind": "JAVA_JACOV",
-        "resultFormat": result_format,
-        "resultGroups": aggregate_results,
-        "fileResults": file_results,
-        "jacovFileResultContext": jacov_file_result_context,
-        "successCount": success,
-        "failureCount": failure,
-        "ignoreCount": ignored,
-        "skipped": skip_marker,
-        "errorObserved": error_marker,
-        "evidence": [str(log)],
-    }
 
-def run_java(
-    job: dict[str, Any], evidence: dict[str, Any], choices: dict[str, Any], stages: list[dict[str, Any]],
-    args: Any, record: Callable[..., dict[str, Any]], ensure_authentication: Callable[[], None],
-    finalize_survey: Callable[..., dict[str, Any]],
-    write_original_evidence: Callable[..., dict[str, Any]],
-) -> dict[str, Any]:
+@dataclass(frozen=True, kw_only=True)
+class OriginalBuild:
+    command: dict[str, Any]
+    install_root: Path
+    install: dict[str, Any]
+    artifacts: list[Path]
+    major: int
+    java_home: Path
+    tool: Path
+    runtime_plan: dict[str, Any]
+    runtime_info: dict[str, Any] | None
+    jacov_config: dict[str, Any]
+
+
+@dataclass(frozen=True, kw_only=True)
+class CoverageArguments:
+    arguments: list[str]
+    cli_patch: tuple | None
+    inplace_command: dict[str, Any] | None
+    inplace_assets: list[str]
+
+
+@dataclass(frozen=True, kw_only=True)
+class CoverageExecution:
+    spec: dict[str, Any]
+    inputs: dict[str, Any]
+    cli_patch: tuple | None
+    maven_install: dict[str, Any] | None
+    maven_plugin: dict[str, str] | None
+    runtime_dependency: dict[str, Any] | None
+    build_runtime_evidence: dict[str, Any]
+
+
+def _prepare_original_plan(*, job, evidence, choices) -> OriginalPlan:
+    observer = None
     data = evidence["java"]
     provided = _provided_plan(job, choices, {"JAVA_MAVEN", "JAVA_GRADLE", "JAVA_CLI"})
     if provided is not None:
@@ -881,7 +492,7 @@ def run_java(
         tasks = list(plan.get("targets") or [])
         spec = dict(plan["commands"]["build"])
     else:
-        systems = list(data.get("confirmedBuildSystems") or data.get("buildSystemCandidates") or [])
+        systems = java_build_systems(data)
         system = _select("managedBuildSystem", systems, choices)
         if system == "MAVEN":
             candidates = java_build_entries(data, system, job["projectRoot"])
@@ -921,13 +532,27 @@ def run_java(
         spec = _command_spec(executable, original_arguments, entry.parent)
         plan = _managed_plan(job, driver, executable, entry, spec, None, tasks, [], "JACOV_PLUGIN")
     if system == "GRADLE":
-        observer = _gradle_observer(job)
+        observer = gradle._gradle_observer(job)
         spec = {**spec, "arguments": [*spec["arguments"], "--init-script", str(observer)]}
         plan = {**plan, "commands": {**plan["commands"], "build": spec}}
+    plan = with_output_tracking(plan, choices)
+    return OriginalPlan(plan=plan, system=system, entry=entry, executable=executable,
+                        spec=spec, observer=observer)
+
+
+
+def _build_original_and_prepare_jacov(
+    *, job, stages, args, record, finalize_survey, write_original_evidence,
+    ensure_authentication, choices, original: OriginalPlan,
+) -> OriginalBuild:
+    plan, system = original.plan, original.system
+    executable, spec = original.executable, original.spec
+    driver = str(plan["driver"])
     record(job, stages, 4, "resolve-original-build-command", envelopes.envelope("RESOLVING_ORIGINAL_BUILD_COMMAND", "SUCCEEDED", {"plan": plan}))
     finalize_survey(job, stages, plan)
     if not args.execute:
         raise WorkflowWaiting("ORIGINAL_BUILD_EXECUTION_REQUIRED", "The original Java build must run", {"execute": True}, decision_owner="USER", purpose="MUTATION_PERMISSION")
+    cli.ensure_sources_restored(job)
     original = state_store.run_checkpointed(
         job, stages, record, 5, "execute-original-build",
         {"plan": plan, "runtimeDigest": state_store.input_digest({name: os.environ.get(name) for name in
@@ -953,10 +578,14 @@ def run_java(
         {"logHash": pathutil.sha256_file(Path(command["log"])), "install": install_inputs,
          "system": system,
          "selections": {key: choices.get(key) for key in ("expectedArtifacts", "javaHome", "javaMajorVersion", "jacovTool")},
-         "cliArguments": choices.get("javaCoverageArguments") if system == "COMMAND_LINE_CANDIDATE" else None},
+         "cliIntegration": choices.get("javaCliIntegration") if system == "COMMAND_LINE_CANDIDATE" else None,
+         "buildRuntime": choices.get("javaBuildRuntime")},
         lambda: envelopes.envelope("RESOLVING_JAVA_ORIGINAL_EVIDENCE", "SUCCEEDED", _postbuild_choices(job, choices, command, install, system)))["data"]
     artifacts = [Path(p) for p in observed["artifacts"]]
     major, java_home, tool = observed["major"], Path(observed["javaHome"]), Path(observed["tool"])
+    runtime_plan = observed["buildRuntime"]
+    build_runtime.check_previous_failure(job, runtime_plan)
+    runtime_info = build_runtime.runtime_metadata(install_root, runtime_plan)
     if not java_home.is_dir() or not any((java_home / "bin" / name).is_file() for name in ("javac", "javac.exe")):
         raise errors.ExecutorError("JAVA_HOME_INVALID", "The observed Java home does not contain a JDK compiler", [str(java_home)])
     toolchain_observation = _java_toolchain_observation(Path(command["log"]), java_home, major)
@@ -992,14 +621,100 @@ def run_java(
             _java_prerequisite_stage_data(agent_installation, jacov_config),
         ),
     )
+    return OriginalBuild(
+        command=command, install_root=install_root, install=install, artifacts=artifacts,
+        major=major, java_home=java_home, tool=tool, runtime_plan=runtime_plan,
+        runtime_info=runtime_info, jacov_config=jacov_config,
+    )
+
+
+
+def _customer_arguments(system, arguments, *, job, plugin=None):
+    """Remove only JACOV's injection, not customer goals/profiles/test options."""
+    result = []
+    index = 0
+    setup = (f"{plugin['groupId']}:{plugin['artifactId']}:{plugin['version']}:setup"
+             if plugin else None)
+    while index < len(arguments):
+        value = arguments[index]
+        if system == "MAVEN" and (value == setup or value.startswith("-Dmaven.jacov.")):
+            index += 1
+            continue
+        if system == "GRADLE":
+            if value.startswith("-Djacov."):
+                index += 1
+                continue
+            path = None
+            width = 1
+            if value in {"--init-script", "-I"} and index + 1 < len(arguments):
+                path, width = arguments[index + 1], 2
+            elif value.startswith("--init-script="):
+                path = value.split("=", 1)[1]
+            if path and pathutil.same_path(path, Path(job["directories"]["temporary"]) / "jacov-gradle-init.gradle"):
+                index += width
+                continue
+        result.append(value)
+        index += 1
+    return result
+
+
+def _validate_additional_options(system, arguments):
+    """Consume option operands without mistaking their values for new tasks."""
+    value_options = {
+        "MAVEN": {"-T", "--threads", "-D", "--define", "-s", "--settings", "-gs", "--global-settings",
+                  "-t", "--toolchains", "-gt", "--global-toolchains", "-l", "--log-file"},
+        "GRADLE": {"--max-workers", "--priority", "--console", "--warning-mode", "-D", "--system-prop",
+                   "-P", "--project-prop", "-I", "--init-script", "-g", "--gradle-user-home"},
+    }[system]
+    index = 0
+    while index < len(arguments):
+        value = arguments[index]
+        name = value.split("=", 1)[0]
+        excluded = (re.match(r"^(?:-x|--exclude-task(?:=|$))", value) if system == "GRADLE"
+                    else re.match(r"^(?:-pl|-am|-rf|--projects(?:=|$)|--resume-from(?:=|$)|--also-make)", value))
+        if not value.startswith("-") or value == "--" or excluded:
+            raise errors.ExecutorError("ORIGINAL_BUILD_ARGUMENTS_CHANGED", "Coverage options may not add goals or exclude tasks/modules")
+        property_value = value
+        if name in {"--define", "--system-prop", "--project-prop"} and "=" in value:
+            property_value = value.split("=", 1)[1]
+        if value in value_options:
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("-"):
+                raise errors.ExecutorError("INVALID_COVERAGE_OPTION", f"Missing operand for {value}")
+            property_value = arguments[index + 1] if value in {"-D", "--define", "--system-prop", "-P", "--project-prop"} else ""
+            index += 1
+        if re.search(r"(?i)(skip|ignoreFailures|testFailureIgnore)", property_value.split("=", 1)[0]):
+            raise errors.ExecutorError("ORIGINAL_BUILD_ARGUMENTS_CHANGED", "Coverage options may not suppress tests or failures")
+        index += 1
+
+
+def _prepare_coverage_arguments(
+    *, job, choices, original: OriginalPlan, observed: OriginalBuild, verified_reuse=None,
+) -> CoverageArguments:
+    system, spec, observer = original.system, original.spec, original.observer
+    tool, java_home = observed.tool, observed.java_home
+    runtime_plan, runtime_info = observed.runtime_plan, observed.runtime_info
+    install, command = observed.install, observed.command
+    runtime_build_spec = build_runtime.apply_java_command(runtime_plan, spec, runtime_info)
     coverage_arguments = choices.get("javaCoverageArguments")
+    cli_patch = None
+    inplace_command = None
+    inplace_assets = []
+    if system == "COMMAND_LINE_CANDIDATE":
+        # Keep the original customer command; the reviewed build-file edits
+        # connect source instrumentation to that command's compiler inputs.
+        integration = choices.get("javaCliIntegration")
+        if isinstance(integration, dict) and integration.get("mode") == "IN_PLACE":
+            inplace_command, inplace_assets = cli.prepare_in_place(job, integration, tool, java_home, runtime_build_spec)
+        elif runtime_plan.get("application") != "BUILD_FILES":
+            cli_patch = cli.prepare(job, integration, tool)
+        coverage_arguments = list(runtime_build_spec["arguments"])
     if coverage_arguments is None and system == "GRADLE":
-        init_script = _gradle_coverage_script(job, tool)
-        coverage_arguments = [*_without_observer(spec["arguments"], observer), "--init-script", str(init_script)]
+        init_script = gradle._gradle_coverage_script(job, tool)
+        coverage_arguments = [*gradle._without_observer(spec["arguments"], observer), "--init-script", str(init_script)]
     elif coverage_arguments is None and system == "MAVEN":
-        plugin = _maven_plugin_record(install, tool)
-        coverage_arguments = [f"{plugin['groupId']}:{plugin['artifactId']}:{plugin['version']}:setup", *spec["arguments"]]
-    if not isinstance(coverage_arguments, list) or not coverage_arguments or not all(isinstance(value, str) for value in coverage_arguments):
+        plugin = maven._maven_plugin_record(install, tool)
+        coverage_arguments = maven._maven_coverage_arguments(spec["arguments"], plugin)
+    if not isinstance(coverage_arguments, list) or (not coverage_arguments and system != "COMMAND_LINE_CANDIDATE") or not all(isinstance(value, str) for value in coverage_arguments):
         raise WorkflowWaiting(
             "JAVA_COVERAGE_ARGUMENTS_REQUIRED",
             "The installed JACOV plugin descriptor and customer tasks must be combined into typed coverage arguments",
@@ -1011,6 +726,36 @@ def run_java(
     forbidden = re.compile(r"(?i)(?:project\.build\.directory|outputDirectory|buildDir|destinationDirectory)")
     if any(forbidden.search(value) for value in coverage_arguments):
         raise errors.ExecutorError("COVERAGE_OUTPUT_PATH_CHANGED", "Java coverage arguments may not redirect build outputs")
+    if system in {"GRADLE", "MAVEN"}:
+        plugin = maven._maven_plugin_record(install, tool) if system == "MAVEN" else None
+        baseline = gradle._without_observer(spec["arguments"], observer) if system == "GRADLE" else spec["arguments"]
+        additions = option_recovery.additional_arguments(
+            _customer_arguments(system, baseline, job=job, plugin=plugin),
+            _customer_arguments(system, coverage_arguments, job=job, plugin=plugin),
+        )
+        _validate_additional_options(system, additions)
+        option_recovery.require_failure(
+            job, choices.get("coverageOptionRecovery"), additions,
+            phases={"coverage-java"}, decision_choices={"javaCoverageArguments": []},
+            verified_reuse=verified_reuse,
+            coverage_arguments=coverage_arguments,
+        )
+    return CoverageArguments(arguments=coverage_arguments, cli_patch=cli_patch,
+                             inplace_command=inplace_command, inplace_assets=inplace_assets)
+
+
+
+def _prepare_coverage_execution(
+    *, job, stages, record, ensure_authentication, choices,
+    original: OriginalPlan, observed: OriginalBuild, arguments: CoverageArguments,
+) -> CoverageExecution:
+    system, spec = original.system, original.spec
+    executable, entry = original.executable, original.entry
+    jacov_config, install, tool = observed.jacov_config, observed.install, observed.tool
+    install_root, java_home = observed.install_root, observed.java_home
+    runtime_plan, runtime_info, artifacts = observed.runtime_plan, observed.runtime_info, observed.artifacts
+    cli_patch, coverage_arguments = arguments.cli_patch, arguments.arguments
+    inplace_command = arguments.inplace_command
     # Authentication is process-local. A saved successful stage is not a credential.
     ensure_authentication()
     network = _check_java_connection(jacov_config)
@@ -1020,37 +765,37 @@ def run_java(
     runtime_dependency: dict[str, Any] | None = None
     coverage_effective_arguments = coverage_arguments
     if system == "MAVEN":
-        plugin = _maven_plugin_record(install, tool)
+        plugin = maven._maven_plugin_record(install, tool)
         maven_plugin = plugin
-        if not _maven_plugin_coordinate_is_used(coverage_arguments, plugin):
+        if not maven._maven_plugin_coordinate_is_used(coverage_arguments, plugin):
             raise errors.ExecutorError(
                 "JACOV_MAVEN_COORDINATE_UNRESOLVED",
                 "Coverage arguments do not reference the selected JACOV Maven plugin coordinate",
                 [str(tool), *coverage_arguments],
             )
         original_arguments = list(spec.get("arguments") or [])
-        repository = _maven_local_repository(job, [*original_arguments, *coverage_arguments])
-        install_context = _maven_install_context(original_arguments)
-        install_executable = _maven_install_executable(install_root, executable)
-        install_spec = _maven_plugin_install_spec(install_executable, entry, repository, tool, plugin, install_context)
+        repository = maven._maven_local_repository(job, [*original_arguments, *coverage_arguments])
+        install_context = maven._maven_install_context(original_arguments)
+        install_executable = maven._maven_install_executable(install_root, executable)
+        install_spec = maven._maven_plugin_install_spec(install_executable, entry, repository, tool, plugin, install_context)
         plugin_destination = repository / plugin["groupId"].replace(".", "/") / plugin["artifactId"] / plugin["version"] / f"{plugin['artifactId']}-{plugin['version']}.jar"
-        install_command = _maven_install_once(job, stages, record, "install-jacov-maven-artifact", install_spec, tool, plugin_destination)
-        runtime = _require_javalib_lower(install_root)
-        runtime_metadata = _maven_javalib_metadata(runtime)
+        install_command = maven._maven_install_once(job, stages, record, "install-jacov-maven-artifact", install_spec, tool, plugin_destination)
+        runtime = maven._require_javalib_lower(install_root)
+        runtime_metadata = maven._maven_javalib_metadata(runtime)
         runtime_commands = [
-            _maven_install_once(
+            maven._maven_install_once(
                 job, stages, record, f"install-tm-javalib-lower-{index}", runtime_spec, runtime,
                 repository / runtime_metadata["groupIds"][index - 1].replace(".", "/") / runtime_metadata["artifactId"] / runtime_metadata["version"] / f"{runtime_metadata['artifactId']}-{runtime_metadata['version']}.jar",
             )
             for index, runtime_spec in enumerate(
-                _maven_javalib_install_specs(install_executable, entry, repository, runtime, runtime_metadata, install_context),
+                maven._maven_javalib_install_specs(install_executable, entry, repository, runtime, runtime_metadata, install_context),
                 start=1,
             )
         ]
         runtime_dependency = {
             "mode": "MAVEN_COVERAGE_INSTRUMENTATION",
             "runtimeSelection": "DEFERRED_TO_EXECUTION",
-            "addDependencyJavaLib": False,
+            "addDependencyJavaLib": build_runtime.uses_plugin_dependency(runtime_plan),
             "runtimeJar": {
                 "path": str(runtime),
                 "sha256": pathutil.sha256_file(runtime),
@@ -1069,14 +814,14 @@ def run_java(
             "runtimeDependency": runtime_dependency,
         }
         record(job, stages, 12, "install-jacov-maven-plugin", envelopes.envelope("INSTALLING_JACOV_MAVEN_PLUGIN", "SUCCEEDED", maven_install))
-        coverage_effective_arguments = _maven_repository_argument(
-            _maven_javalib_argument(coverage_arguments, False), repository
+        coverage_effective_arguments = maven._maven_repository_argument(
+            maven._maven_javalib_argument(coverage_arguments, build_runtime.uses_plugin_dependency(runtime_plan)), repository
         )
     elif system == "GRADLE":
-        supplied_init = _gradle_init_script(coverage_arguments)
+        supplied_init = gradle._gradle_init_script(coverage_arguments)
         if supplied_init.is_file() and pathutil.path_within(supplied_init, job["directories"]["temporary"]):
-            supplied_init.write_text(_replace_gradle_jar(supplied_init.read_text(encoding="utf-8-sig"), tool), encoding="utf-8")
-        runtime_dependency = _prepare_gradle_runtime(coverage_arguments, job)
+            supplied_init.write_text(gradle._replace_gradle_jar(supplied_init.read_text(encoding="utf-8-sig"), tool), encoding="utf-8")
+        runtime_dependency = gradle._prepare_gradle_runtime(coverage_arguments, job, runtime_plan, runtime_info)
         record(
             job,
             stages,
@@ -1084,33 +829,133 @@ def run_java(
             "prepare-jacov-gradle-runtime",
             envelopes.envelope("PREPARING_JACOV_GRADLE_RUNTIME", "SUCCEEDED", runtime_dependency),
         )
+    if runtime_plan.get("application") == "BUILD_FILES":
+        cli_patch = build_runtime.prepare_build_files(
+            job, runtime_plan, runtime_info,
+            choices.get("javaCliIntegration") if system == "COMMAND_LINE_CANDIDATE" else None, tool)
+    build_runtime.check_runtime_arguments(runtime_plan, coverage_arguments)
     coverage_environment = {**spec.get("environmentDelta", {}), **_jacov_environment(jacov_config)}
+    coverage_effective_arguments, coverage_environment = build_runtime.apply(
+        runtime_plan, system, coverage_effective_arguments, coverage_environment, runtime_info,
+        gradle._gradle_init_script(coverage_arguments) if system == "GRADLE" else None)
+    build_runtime_evidence = {"plan": runtime_plan, "runtime": runtime_info,
+                              "agent": runtime_info if runtime_plan["mode"] == "JAVA_AGENT" else None,
+                              "runtimeInjected": runtime_info is not None and runtime_plan.get("application") != "EXISTING",
+                              "existingRuntimeReused": runtime_plan.get("application") == "EXISTING",
+                              "separateMeasurementVerification": False}
+    record(job, stages, 12, "prepare-java-build-runtime",
+           envelopes.envelope("PREPARING_JAVA_BUILD_RUNTIME", "SUCCEEDED", build_runtime_evidence))
     coverage_spec = {**spec, "arguments": coverage_effective_arguments,
                      "environmentDelta": coverage_environment, "coverToolEnvironment": True}
+    if inplace_command is not None:
+        coverage_spec = {**inplace_command, "environmentDelta": coverage_environment, "coverToolEnvironment": True}
     coverage_inputs = {"command": coverage_spec, "artifacts": [str(p) for p in artifacts],
                        "sourceFingerprint": project_index.input_fingerprint(fileio.load_json(Path(job["directories"]["temporary"]) / "project-index.json")),
                        "jar": pathutil.sha256_file(tool), "jdk": str(java_home),
+                       "buildRuntime": build_runtime_evidence,
                        "configDigest": pathutil.sha256_file(Path(jacov_config["path"])),
-                       "initHash": pathutil.sha256_file(_gradle_init_script(coverage_arguments)) if system == "GRADLE" else None}
-    verified = state_store.run_checkpointed(job, stages, record, 13, "java-coverage-build", coverage_inputs,
-        lambda: _verified_coverage(job, stages, record, artifacts, coverage_spec, spec), validate=_coverage_outputs_unchanged)["data"]
+                       "initHash": pathutil.sha256_file(gradle._gradle_init_script(coverage_arguments)) if system == "GRADLE" else None}
+    return CoverageExecution(
+        spec=coverage_spec, inputs=coverage_inputs, cli_patch=cli_patch,
+        maven_install=maven_install, maven_plugin=maven_plugin,
+        runtime_dependency=runtime_dependency, build_runtime_evidence=build_runtime_evidence,
+    )
+
+
+
+def _execute_coverage(
+    *, job, stages, record, original: OriginalPlan, observed: OriginalBuild,
+    arguments: CoverageArguments, execution: CoverageExecution,
+):
+    artifacts, spec, runtime_plan = observed.artifacts, original.spec, observed.runtime_plan
+    coverage_spec, coverage_inputs, cli_patch = execution.spec, execution.inputs, execution.cli_patch
+    inplace_command = arguments.inplace_command
+    cli_changes = []
+    if inplace_command is not None and cli_patch is not None:
+        def execute_inplace_with_runtime(restore):
+            def restore_all():
+                restore()
+                cli.ensure_sources_restored(job)
+            return _verified_coverage(job, stages, record, artifacts, coverage_spec, spec,
+                                      before_recovery=restore_all, runtime_plan=runtime_plan)
+        outcome, cli_changes = cli.execute(*cli_patch, execute_inplace_with_runtime)
+        cli.ensure_sources_restored(job)
+        outcome["data"]["sourceRestoration"] = {"mode": "IN_PLACE", "verified": True}
+        record(job, stages, 13, "java-coverage-build", outcome)
+        verified = outcome["data"]
+    elif inplace_command is not None:
+        outcome = _verified_coverage(job, stages, record, artifacts, coverage_spec, spec,
+                                     before_recovery=lambda: cli.ensure_sources_restored(job), runtime_plan=runtime_plan)
+        cli.ensure_sources_restored(job)
+        outcome["data"]["sourceRestoration"] = {"mode": "IN_PLACE", "verified": True}
+        record(job, stages, 13, "java-coverage-build", outcome)
+        verified = outcome["data"]
+    elif cli_patch is not None:
+        # Never reuse proof for a different edited customer build script.
+        outcome, cli_changes = cli.execute(*cli_patch, lambda restore:
+            _verified_coverage(job, stages, record, artifacts, coverage_spec, spec, before_recovery=restore, runtime_plan=runtime_plan))
+        record(job, stages, 13, "java-coverage-build", outcome)
+        verified = outcome["data"]
+    else:
+        verified = state_store.run_checkpointed(job, stages, record, 13, "java-coverage-build", coverage_inputs,
+            # Rerun on resume; do not inspect outputs or reuse a prior build result.
+            lambda: _verified_coverage(job, stages, record, artifacts, coverage_spec, spec, runtime_plan=runtime_plan), validate=lambda _: False)["data"]
+    return verified, cli_changes
+
+
+def run_java(
+    job: dict[str, Any], evidence: dict[str, Any], choices: dict[str, Any], stages: list[dict[str, Any]],
+    args: Any, record: Callable[..., dict[str, Any]], ensure_authentication: Callable[[], None],
+    finalize_survey: Callable[..., dict[str, Any]],
+    write_original_evidence: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    original = _prepare_original_plan(job=job, evidence=evidence, choices=choices)
+    observed = _build_original_and_prepare_jacov(
+        job=job, stages=stages, args=args, record=record, finalize_survey=finalize_survey,
+        write_original_evidence=write_original_evidence,
+        ensure_authentication=ensure_authentication, choices=choices, original=original,
+    )
+    arguments = _prepare_coverage_arguments(
+        job=job, choices=choices, original=original, observed=observed,
+        verified_reuse=getattr(args, "verified_coverage_options", None),
+    )
+    execution = _prepare_coverage_execution(
+        job=job, stages=stages, record=record, ensure_authentication=ensure_authentication,
+        choices=choices, original=original, observed=observed, arguments=arguments,
+    )
+    verified, cli_changes = _execute_coverage(
+        job=job, stages=stages, record=record, original=original, observed=observed,
+        arguments=arguments, execution=execution,
+    )
+    system, entry = original.system, original.entry
+    tool, install_root = observed.tool, observed.install_root
+    major, java_home = observed.major, observed.java_home
+    runtime_plan, runtime_info = observed.runtime_plan, observed.runtime_info
+    coverage_spec = execution.spec
+    maven_install, maven_plugin = execution.maven_install, execution.maven_plugin
+    runtime_dependency, build_runtime_evidence = execution.runtime_dependency, execution.build_runtime_evidence
+    inplace_assets, inplace_command = arguments.inplace_assets, arguments.inplace_command
     coverage_artifacts = [Path(p) for p in verified["artifacts"]]
     build_result = {
         **verified,
         "jacovTool": str(tool),
         "mavenPluginInstall": maven_install,
         "runtimeDependency": runtime_dependency,
+        "buildRuntime": build_runtime_evidence,
     }
     execution_guidance = _java_execution_guidance(install_root, runtime_dependency)
+    execution_guidance["coverageBuildRuntimeInjected"] = build_runtime_evidence["runtimeInjected"]
+    execution_guidance["buildRuntime"] = build_runtime_evidence
     build_result["executionGuidance"] = execution_guidance
     persistent_assets = (
         [runtime_dependency["initScript"], str(tool)]
         if system == "GRADLE" and isinstance(runtime_dependency, dict)
         else []
     )
+    persistent_assets.extend(inplace_assets)
     return {
         **build_result,
-        "coverageVerified": True,
+        "buildSucceeded": True,
         "_manualCoverage": {
             "buildSystem": f"JAVA_{system}",
             "commands": [coverage_spec],
@@ -1119,11 +964,14 @@ def run_java(
             "mode": "MANUAL_JACOV_COMMAND",
             "details": {
                 "entry": str(entry),
+                "existingProjectChanges": cli_changes,
+                "cliSourceMode": ("IN_PLACE" if inplace_command is not None else "SEPARATE_OUTPUT") if system == "COMMAND_LINE_CANDIDATE" else None,
                 "projectRoot": job["projectRoot"],
                 "javaHome": str(java_home),
                 "javaMajorVersion": major,
                 "jacovTool": str(tool),
-                "runtimeSelection": "DEFERRED_TO_EXECUTION",
+                "runtimeSelection": runtime_plan["mode"] + "_FOR_BUILD_EXECUTION" if runtime_info else "DEFERRED_TO_EXECUTION",
+                "buildRuntime": build_runtime_evidence,
                 "executionGuidance": execution_guidance,
                 "repository": str(maven_install["repository"]) if maven_install else None,
                 "mavenPlugin": maven_plugin,

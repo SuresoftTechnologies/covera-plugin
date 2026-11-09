@@ -166,7 +166,9 @@ def create_gcc_original_plan(
         }[selection["driver"]]
     }
     if selection["driver"] == "CMAKE":
-        coverage_injection["configureArguments"] = list(configure_arguments)
+        # Cache/customer settings already belong to commands.configure. They
+        # are not additional coverage-only workarounds.
+        coverage_injection["configureArguments"] = []
     if selection["driver"] == "MAKE":
         coverage_injection["cleanTarget"] = clean_target
         coverage_injection["forceRebuild"] = clean_target is None
@@ -356,7 +358,24 @@ def extract_gcc_toolchain(
                     command_directory = pathutil.canonical(directory_candidate)
                 except (errors.ExecutorError, OSError):
                     command_directory = default_directory
+            # Make recipes often print "CC object.o" / "LD program" before
+            # the real command. A matching executable on PATH is not proof
+            # that these status lines invoked it. Keep genuine one-input
+            # commands (e.g. ld object.o) and response-file invocations.
+            progress = re.fullmatch(r"(CC|CXX|LD|AR)\s+(\S+)", line, re.IGNORECASE)
+            if progress:
+                label, argument = progress.groups()
+                suffix = Path(argument).suffix.casefold()
+                is_output = (
+                    (label.casefold() in {"cc", "cxx"} and suffix in {".o", ".obj"})
+                    or (label.casefold() == "ld" and suffix in {"", ".exe", ".elf", ".out", ".so", ".dll"})
+                    or (label.casefold() == "ar" and suffix in {".a", ".lib"})
+                )
+                if is_output and not argument.startswith(("-", "@")):
+                    continue
             analysis = native_logs.analyze_native_command_text(line)
+            if not analysis["executables"]:
+                continue
             response_expansion = native_logs.expand_response_file_tokens(
                 analysis["tokens"],
                 command_directory,
@@ -395,6 +414,10 @@ def extract_gcc_toolchain(
                 if family is None:
                     continue
                 has_compile_flag = any(value.casefold() in {"-c", "/c"} for value in expanded_tokens)
+                # Preprocessing and assembly output must not establish a
+                # final linker, even when they use an explicit output path.
+                if any(value in {"-E", "-S", "-fsyntax-only"} for value in expanded_tokens):
+                    continue
                 has_output_flag = any(
                     value == "-o" or value.casefold().startswith("/out:")
                     for value in expanded_tokens
@@ -661,6 +684,9 @@ def execute_gcc(
         else None
     )
 
+    build_phase = "rebuild" if "rebuild" in plan["commands"] else "build"
+    build_environment = _command_environment(plan["commands"][build_phase])
+    build_path = next((value for key, value in build_environment.items() if key.casefold() == "path"), "")
     results: dict[str, dict[str, Any]] = {}
     outputs: dict[str, Path] = {}
     cmake_reset = None
@@ -690,35 +716,6 @@ def execute_gcc(
         raise errors.ExecutorError("ORIGINAL_BUILD_LOG_MISSING", "The original build produced no parseable log")
     build_phase = "rebuild" if "rebuild" in plan["commands"] else "build"
     build_directory = Path(plan["originalBuildDirectory"])
-    try:
-        toolchain = extract_gcc_toolchain(
-            build_output,
-            None,
-            list(plan["requiredRoles"]),
-            environment=_command_environment(plan["commands"][build_phase]),
-            selected_tools=plan.get("targetTools"),
-            working_directory=build_directory,
-        )
-    except WorkflowWaiting as error:
-        command_spec = plan["commands"].get("commands")
-        if error.code != "ORIGINAL_TOOLCHAIN_UNRESOLVED" or command_spec is None:
-            raise
-        command_result = _run(
-            command_spec,
-            logs / f"original-{selection['driver'].casefold()}-commands.log",
-            "ORIGINAL_TOOLCHAIN_COMMANDS_FAILED",
-            f"The optional {selection['driver']} tool-command query failed after the original build",
-        )
-        outputs["commands"] = Path(command_result["log"])
-        results["commands"] = _without_output(command_result)
-        toolchain = extract_gcc_toolchain(
-            build_output,
-            outputs["commands"],
-            list(plan["requiredRoles"]),
-            environment=_command_environment(command_spec),
-            selected_tools=plan.get("targetTools"),
-            working_directory=build_directory,
-        )
     artifacts = extract_gcc_artifacts(build_output, build_directory)
     return envelopes.envelope(
         "EXECUTING_ORIGINAL_BUILD",
@@ -732,7 +729,8 @@ def execute_gcc(
             "cache": str(cache_path) if cache_path else None,
             "generator": cmake_values.get("CMAKE_GENERATOR"),
             "originalBuildPlan": plan,
-            "toolchain": toolchain,
+            "toolchainReviewRequired": True,
+            "toolchainPathEnvironment": build_path,
             "artifacts": artifacts,
         },
     )

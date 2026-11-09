@@ -7,7 +7,7 @@ from typing import Any
 
 STRING_ARRAY_SUBSET_CHOICES = {"targetFrameworks", "visualStudioProjects"}
 STRING_ARRAY_CHOICES = {"managedTasks", "expectedArtifacts", "javaCoverageArguments"}
-JSON_OBJECT_CHOICES = {"originalBuildPlan", "targetToolPaths", "toolChainInfoSelection"}
+JSON_OBJECT_CHOICES = {"executionEnvironmentReview", "originalToolchainDecision", "originalBuildPlan", "outputTracking", "targetToolPaths", "toolChainInfoSelection", "javaCliIntegration", "javaBuildRuntime", "coverageOptionRecovery"}
 POSITIVE_INTEGER_CHOICES = {"javaMajorVersion"}
 NONEMPTY_STRING_CHOICES = {
     "agentInstallPath",

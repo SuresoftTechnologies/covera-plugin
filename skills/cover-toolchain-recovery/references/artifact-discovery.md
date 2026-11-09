@@ -67,7 +67,7 @@ python "${SKILL_ROOT}/scripts/cover_recovery.py" start --source src/main.cpp --p
 
 대상 TU에 연결된 `.elog`가 없다는 사실은 진단 종료 조건이 아니다. 자동 수집은 항상 서버 Issue API에서 소스 경로와 HardwareID가 일치하는 오류를 조회하고 전체 ZIP을 다운로드한다. 이 단계에서 사용자에게 ZIP, `.elog`, Issue ID 제공을 요구하지 않는다.
 
-현재 Open API는 `GET /v1/issue/download`에 `macAddress`, `sourceFilePath`, `withSource=true`, `issueWorkType=PA_ERROR_RESULT`를 받아 최신 오류 ZIP을 바로 반환한다. 서버의 경로 매칭은 구분자·대소문자를 무시한 끝부분 일치이므로 소스 전체 경로를 전달하고 ZIP 내부 DB의 경로를 다시 확인한다. 오류 목록, Issue ID, 발생 시각은 응답에 없으며 클라이언트에서 추정하지 않는다.
+현재 Open API는 `GET /v1/issue/download`에 `macAddress`, `sourceFilePath`, `withSource=true`, `issueWorkType=PA_ERROR_RESULT`를 받아 최신 오류 ZIP을 바로 반환한다. 서버의 경로 매칭은 구분자·대소문자를 무시한 끝부분 일치이므로 소스 전체 경로를 전달하고 ZIP 내부 DB의 경로를 다시 확인한다. 오류 목록과 Issue ID는 응답에 없으며 클라이언트에서 추정하지 않는다. 발생 시각은 `X-Issue-Occurred-Time` 헤더가 있을 때만 기록한다.
 
 **ZIP DB만으로 HardwareID를 증명하지 않는다.** ZIP 이름은 Issue ID, 내부 폴더는 TU 해시와 세션 ID를 사용한다. 소스 경로와 HardwareID만으로 파일명을 계산할 수 없다. ZIP 이름에서 읽은 Issue ID는 파일명 힌트일 뿐 조회 입력이나 다운로드 ID로 사용하지 않는다. 다운로드에는 MAC 주소와 소스 전체 경로, `PA_ERROR_RESULT`를 전달한다. `case.json.collection`에는 요청 조건과 API 경로를 기록하며, 응답에 없는 Issue ID·발생 시각을 추정하지 않는다.
 

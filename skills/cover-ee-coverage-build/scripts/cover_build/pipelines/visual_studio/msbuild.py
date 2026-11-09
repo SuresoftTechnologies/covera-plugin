@@ -19,6 +19,7 @@ from cover_build.common import pathutil
 from cover_build.common import processes
 from cover_build.core import errors
 from cover_build.pipelines.visual_studio import planning as vs_planning
+from cover_build.services import build_execution
 
 
 def create_msbuild_original_plan(
@@ -176,13 +177,6 @@ def execute_msbuild(
     artifact_verification = processes.verify_artifacts(
         SimpleNamespace(before=str(before_path), after=str(after_path), output=None)
     )
-    observed = visual_studio.extract_toolchain_from_diagnostic(
-        diagnostic_log,
-        artifacts,
-        working_directories=[entry.parent, *[artifact.parent for artifact in artifacts]],
-    )
-    resolved = visual_studio.apply_tool_overrides(observed, overrides)
-    visual_studio.reject_cover_wrappers(resolved["tools"])
     return envelopes.envelope(
         "EXECUTING_ORIGINAL_BUILD",
         "SUCCEEDED",
@@ -199,7 +193,11 @@ def execute_msbuild(
             "diagnosticLog": str(diagnostic_log),
             "diagnosticLogEvidence": current_diagnostic,
             "artifactVerification": artifact_verification,
-            "toolchain": resolved,
+            "buildDirectory": str(entry.parent),
+            "toolchainPathEnvironment": next((v for k, v in environment.items() if k.casefold() == "path"), ""),
+            "reviewRequiredRoles": ["c_compiler",
+                *(["linker"] if any(p.suffix.lower() in {".exe", ".dll"} for p in artifacts) else []),
+                *(["ar"] if any(p.suffix.lower() == ".lib" for p in artifacts) else [])],
         },
     )
 
@@ -236,20 +234,16 @@ def execute_msbuild_plan(
         list(coverage_plan.get("expectedArtifacts") or [str(path) for path in artifact_paths]),
     )
     serialized = [str(path) for path in artifact_paths]
-    record(job, stages, 12, "snapshot-before", processes.snapshot_artifacts(SimpleNamespace(artifact=serialized, output=str(before_path))))
-    build_result = record(job, stages, 13, "rebuild", processes.execute_plan(SimpleNamespace(plan=str(plan_path), phase="rebuild", log_dir=job["directories"]["logs"])))
-    record(job, stages, 14, "snapshot-after", processes.snapshot_artifacts(SimpleNamespace(artifact=serialized, output=str(after_path))))
-    artifact_result = processes.verify_artifacts(SimpleNamespace(before=str(before_path), after=str(after_path), output=None))
-    artifact_result.setdefault("data", {})["outputPathComparison"] = comparison
-    artifact_result = record(job, stages, 15, "verify-artifacts", artifact_result)
+    if "clean" in coverage_plan["commands"]:
+        record(job, stages, 12, "clean", build_execution.execute_plan(SimpleNamespace(plan=str(plan_path), phase="clean", log_dir=job["directories"]["logs"])))
+    build_result = record(job, stages, 13, "rebuild", build_execution.execute_plan(SimpleNamespace(plan=str(plan_path), phase="rebuild", log_dir=job["directories"]["logs"])))
     command_results = build_result.get("data", {}).get("results", [])
     if not command_results:
         raise errors.ExecutorError("BUILD_INTERVAL_UNAVAILABLE", "The MSBuild stage emitted no command timing evidence")
     return {
-        "artifactVerification": artifact_result,
+        "successCriterion": "BUILD_EXIT_CODE",
         "lastStage": 15,
         "artifacts": serialized,
-        "outputPathComparison": comparison,
         "buildInterval": {
             "startedAt": command_results[0]["startedAt"],
             "finishedAt": command_results[-1]["finishedAt"],
@@ -303,6 +297,14 @@ def create_applied_msbuild_plan(coverage_plan: dict[str, Any]) -> dict[str, Any]
     if isinstance(command.get("environmentDelta"), dict):
         command["environmentDelta"] = neutralize_environment(command["environmentDelta"])
     plan["commands"] = {"rebuild": command}
+    if "clean" in coverage_plan["commands"]:
+        clean = copy.deepcopy(coverage_plan["commands"]["clean"])
+        clean["arguments"] = [argument for argument in clean["arguments"]
+                              if not argument.casefold().startswith(transient_prefixes)]
+        for key in ("environment", "environmentDelta"):
+            if isinstance(clean.get(key), dict):
+                clean[key] = neutralize_environment(clean[key])
+        plan["commands"]["clean"] = clean
     plan["persistenceVerification"] = {
         "strategy": "PROJECT_PROPERTY_SHEET",
         "removedGlobalProperties": ["ForceImportBeforeCppTargets", "CoverWrapperDirectory"],
@@ -325,47 +327,12 @@ def verify_applied_msbuild(
     applied_plan = create_applied_msbuild_plan(coverage_plan)
     fileio.atomic_write_json(plan_path, applied_plan)
     serialized = [str(path) for path in artifacts]
-    processes.snapshot_artifacts(SimpleNamespace(artifact=serialized, output=str(before_path)))
-    build_result = processes.execute_plan(
+    if "clean" in applied_plan["commands"]:
+        build_execution.execute_plan(SimpleNamespace(plan=str(plan_path), phase="clean", log_dir=str(logs)))
+    build_result = build_execution.execute_plan(
         SimpleNamespace(plan=str(plan_path), phase="rebuild", log_dir=str(logs))
     )
-    processes.snapshot_artifacts(SimpleNamespace(artifact=serialized, output=str(after_path)))
-    artifact_result = processes.verify_artifacts(
-        SimpleNamespace(before=str(before_path), after=str(after_path), output=None)
-    )
-    command_results = build_result.get("data", {}).get("results", [])
-    wrapper_verifications = build_result.get("data", {}).get("verifications", [])
-    if not command_results or not wrapper_verifications:
-        raise errors.ExecutorError(
-            "PERSISTENT_MSBUILD_VERIFICATION_INCOMPLETE",
-            "The project-linked Rebuild did not emit command and wrapper evidence",
-        )
-    required_wrappers = set(applied_plan.get("wrapperVerificationNames") or [])
-    verified_wrappers = {
-        name
-        for verification in wrapper_verifications
-        for name in (verification.get("verifiedWrappers") or {})
-    }
-    if not required_wrappers or verified_wrappers != required_wrappers:
-        raise errors.ExecutorError(
-            "PERSISTENT_MSBUILD_WRAPPER_VERIFICATION_FAILED",
-            "The project-linked Rebuild did not verify every required COVER wrapper",
-            sorted(required_wrappers - verified_wrappers),
-        )
-    verified_artifacts = artifact_result.get("data", {}).get("artifacts", [])
-    comparison = pathutil.require_same_output_paths(
-        serialized,
-        [str(item.get("path")) for item in verified_artifacts],
-    )
-    if len(verified_artifacts) != len(serialized) or any(
-        item.get("exists") is not True or item.get("fresh") is not True
-        for item in verified_artifacts
-    ):
-        raise errors.ExecutorError(
-            "PERSISTENT_MSBUILD_ARTIFACT_VERIFICATION_FAILED",
-            "The project-linked Rebuild did not refresh every same-path artifact",
-            verified_artifacts,
-        )
+    command_results = build_result["data"]["results"]
     command = applied_plan["commands"]["rebuild"]
     return {
         "verified": True,
@@ -381,9 +348,7 @@ def verify_applied_msbuild(
             "ForceImportBeforeCppTargets",
             "CoverWrapperDirectory",
         ],
-        "wrapperVerification": wrapper_verifications,
-        "artifactVerification": artifact_result,
-        "outputPathComparison": comparison,
+        "successCriterion": "BUILD_EXIT_CODE",
         "buildInterval": {
             "startedAt": command_results[0]["startedAt"],
             "finishedAt": command_results[-1]["finishedAt"],

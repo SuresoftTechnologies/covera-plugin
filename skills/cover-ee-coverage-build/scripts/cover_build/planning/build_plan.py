@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from cover_build.common import fileio
-from cover_build.common import gcc_tools
+from cover_build.planning import gcc_tools
 from cover_build.common import pathutil
 from cover_build.common import processes
 from cover_build.common import project_files
 from cover_build.core import errors
+from cover_build.planning import execution_environment
 import os
+import project_index
 
 
 BUILD_EVIDENCE_SCHEMA = "cover-build-evidence/v1"
@@ -339,6 +341,7 @@ def collect_build_evidence(
             "schema": BUILD_EVIDENCE_SCHEMA,
             "jobId": job["jobId"],
             "projectRoot": job["projectRoot"],
+            "executionHost": execution_environment.host_context(),
             "candidateBuildSystems": list(data.get("candidateBuildSystems") or []),
             "solutionProjects": dict(data.get("solutionProjects") or {}),
             "solutionProjectConfigurations": dict(data.get("solutionProjectConfigurations") or {}),
@@ -845,4 +848,9 @@ def validate_original_build_plan(job: dict[str, Any], raw: Any, expected_driver:
         "expectedArtifacts": normalized_artifacts,
         "evidence": list(evidence),
     }
+    if "outputTracking" in raw:
+        try:
+            normalized["outputTracking"] = project_index.validate_output_tracking(raw["outputTracking"], job["projectRoot"])
+        except ValueError as exc:
+            raise errors.ExecutorError("INVALID_ORIGINAL_BUILD_PLAN", str(exc)) from exc
     return fileio.add_integrity(normalized)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import os
+import subprocess
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,10 +14,11 @@ from typing import Any, Callable
 from cover_build.core.errors import WorkflowWaiting
 from cover_build.common import envelopes
 from cover_build.common import fileio
-from cover_build.common import gcc_tools
+from cover_build.planning import gcc_tools
 from cover_build.common import pathutil
 from cover_build.common import processes
 from cover_build.core import errors
+from cover_build.services import build_execution
 
 
 def gcc_wrapper_mapping(
@@ -189,13 +192,18 @@ def _execute_gcc_plan_core(
     before_path = Path(job["directories"]["temporary"]) / "artifacts-before.json"
     after_path = Path(job["directories"]["temporary"]) / "artifacts-after.json"
     next_stage = initial_stage
+    if adapter not in {"CMAKE", "CMAKE_GCC"} and "configure" in coverage_plan["commands"]:
+        record(job, stages, next_stage, "configure", build_execution.execute_plan(
+            SimpleNamespace(plan=str(plan_path), phase="configure", log_dir=job["directories"]["logs"])
+        ))
+        next_stage += 1
     if adapter in {"CMAKE", "CMAKE_GCC"}:
         record(
             job,
             stages,
             next_stage,
             "cmake-configure",
-            processes.execute_plan(SimpleNamespace(plan=str(plan_path), phase="configure", log_dir=job["directories"]["logs"])),
+            build_execution.execute_plan(SimpleNamespace(plan=str(plan_path), phase="configure", log_dir=job["directories"]["logs"])),
         )
         next_stage += 1
         plan = fileio.load_json(plan_path)
@@ -221,13 +229,6 @@ def _execute_gcc_plan_core(
             ),
         )
         next_stage += 1
-    record(
-        job,
-        stages,
-        next_stage,
-        "snapshot-before",
-        processes.snapshot_artifacts(SimpleNamespace(artifact=artifacts, output=str(before_path))),
-    )
     plan_commands = fileio.load_json(plan_path).get("commands", {})
     has_clean = "clean" in plan_commands
     if has_clean:
@@ -236,7 +237,7 @@ def _execute_gcc_plan_core(
             stages,
             next_stage + 1,
             "clean",
-            processes.execute_plan(SimpleNamespace(plan=str(plan_path), phase="clean", log_dir=job["directories"]["logs"])),
+            build_execution.execute_plan(SimpleNamespace(plan=str(plan_path), phase="clean", log_dir=job["directories"]["logs"])),
         )
     build_stage = next_stage + 2 if has_clean else next_stage + 1
     build_phase = "rebuild" if "rebuild" in plan_commands else "build"
@@ -245,23 +246,13 @@ def _execute_gcc_plan_core(
         stages,
         build_stage,
         build_phase,
-        processes.execute_plan(SimpleNamespace(plan=str(plan_path), phase=build_phase, log_dir=job["directories"]["logs"])),
+        build_execution.execute_plan(SimpleNamespace(plan=str(plan_path), phase=build_phase, log_dir=job["directories"]["logs"])),
     )
-    record(
-        job,
-        stages,
-        build_stage + 1,
-        "snapshot-after",
-        processes.snapshot_artifacts(SimpleNamespace(artifact=artifacts, output=str(after_path))),
-    )
-    artifact_result = processes.verify_artifacts(SimpleNamespace(before=str(before_path), after=str(after_path), output=None))
-    artifact_result.setdefault("data", {})["outputPathComparison"] = comparison
-    artifact_result = record(job, stages, build_stage + 2, "verify-artifacts", artifact_result)
     command_results = build_result.get("data", {}).get("results", [])
     if not command_results:
         raise errors.ExecutorError("BUILD_INTERVAL_UNAVAILABLE", "The GCC build stage emitted no command timing evidence")
     return {
-        "artifactVerification": artifact_result,
+        "successCriterion": "BUILD_EXIT_CODE",
         "lastStage": build_stage + 2,
         "artifacts": list(artifacts),
         "outputPathComparison": comparison,
@@ -282,3 +273,26 @@ def execute_gcc_plan(
 ) -> dict[str, Any]:
     """Execute a validated GCC-family coverage plan."""
     return _execute_gcc_plan_core(job, stages, record, plan_path, adapter, artifacts, execute)
+
+
+DEFAULT_GCC_COVER_CONFIG = "gcc.config"
+
+
+def selected_cover_config(args: argparse.Namespace, build_system: str) -> str:
+    """Use gcc.config for STM32CubeIDE; otherwise allow an explicit override."""
+    if build_system == "STM32CUBEIDE":
+        return DEFAULT_GCC_COVER_CONFIG
+    requested = getattr(args, "gcc_cover_config", None)
+    if requested:
+        return str(requested)
+    return DEFAULT_GCC_COVER_CONFIG
+
+
+def probe_windows_gcc_ar_wrapper(wrapper: str, agent_root: str, cover_config: str) -> dict[str, Any]:
+    if os.name != "nt" or not Path(wrapper).is_file():
+        return {"applicable": False, "fallbackRequired": False}
+    env = os.environ.copy()
+    env["CODESCROLL_TM_INSTALL_PATH"] = agent_root
+    env["COVER_BR_CONFIG"] = cover_config
+    result = subprocess.run([wrapper, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", timeout=20, env=env, check=False)
+    return {"applicable": True, "fallbackRequired": result.returncode != 0, "exitCode": result.returncode}

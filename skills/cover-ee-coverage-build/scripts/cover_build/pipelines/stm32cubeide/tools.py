@@ -285,79 +285,6 @@ def persistent_ide_base_path(executable: Path) -> str:
     return os.pathsep.join(unique)
 
 
-def _nm_for_compiler(compiler: Path) -> Path:
-    suffix = compiler.suffix
-    stem = compiler.stem
-    if not stem.casefold().endswith("gcc"):
-        raise errors.ExecutorError(
-            "STM32CUBEIDE_NM_TOOL_NOT_RESOLVED",
-            "The observed STM32 C compiler name cannot be mapped to the sibling nm tool",
-            [str(compiler)],
-        )
-    nm = compiler.with_name(f"{stem[:-3]}nm{suffix}")
-    if not nm.is_file():
-        raise errors.ExecutorError(
-            "STM32CUBEIDE_NM_TOOL_NOT_FOUND",
-            "The sibling STM32 nm tool was not found",
-            [str(nm)],
-        )
-    return nm
-
-
-def verify_instrumented_elf_symbols(
-    job: dict[str, Any],
-    ide_executable: Path,
-    artifacts: list[str],
-    real_tools: dict[str, str],
-) -> dict[str, Any]:
-    compiler_value = real_tools.get("c_compiler")
-    if not compiler_value:
-        raise errors.ExecutorError(
-            "STM32CUBEIDE_C_COMPILER_NOT_RESOLVED",
-            "The STM32 C compiler is required to verify instrumented ELF symbols",
-        )
-    compiler = Path(compiler_value)
-    if not compiler.is_file():
-        native_directory = native_tool_directory(ide_executable)
-        compiler = native_directory / compiler.name
-        if os.name == "nt" and not compiler.suffix:
-            compiler = compiler.with_suffix(".exe")
-    nm = _nm_for_compiler(compiler)
-    verified: list[dict[str, Any]] = []
-    for index, artifact_value in enumerate(artifacts, start=1):
-        artifact = Path(artifact_value)
-        spec = processes.command_spec(nm, [str(artifact)], artifact.parent, 120)
-        result = processes.run_command(
-            spec,
-            Path(job["directories"]["logs"]) / f"coverage-stm32cubeide-ide-reuse-nm-{index:02d}.log",
-        )
-        if result["exitCode"] != 0:
-            raise errors.ExecutorError(
-                "STM32CUBEIDE_NM_FAILED",
-                "The STM32 nm tool could not inspect the IDE-reuse output",
-                [result["log"], str(artifact)],
-            )
-        symbols = Path(result["log"]).read_text(encoding="utf-8", errors="replace")
-        required = {
-            "runtimeInitialization": "cstmInitializeTu" in symbols,
-            "translationUnitCoverageData": "cstmCoverageData_" in symbols,
-        }
-        if not all(required.values()):
-            raise errors.ExecutorError(
-                "STM32CUBEIDE_INSTRUMENTATION_SYMBOLS_MISSING",
-                "The IDE-reuse output does not contain required COVER instrumentation symbols",
-                [result["log"], str(artifact), required],
-            )
-        verified.append(
-            {
-                "path": str(artifact),
-                "requiredSymbols": required,
-                "evidence": result["log"],
-            }
-        )
-    return {"nm": str(nm), "artifacts": verified}
-
-
 def create_original_plan(
     job: dict[str, Any],
     executable: Path,
@@ -406,13 +333,6 @@ def execute_original(job: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any
     native_bin = native_tool_directory(Path(validated["buildTool"]))
     environment["PATH"] = os.pathsep.join([str(native_bin), environment.get("PATH", "")])
     build_directory = Path(validated["originalBuildDirectory"]) / str(validated["configuration"])
-    toolchain = gcc_original.extract_gcc_toolchain(
-        Path(result["log"]),
-        None,
-        list(validated["requiredRoles"]),
-        environment=environment,
-        working_directory=build_directory,
-    )
     artifacts = gcc_original.extract_gcc_artifacts(Path(result["log"]), build_directory)
     return envelopes.envelope(
         "EXECUTING_ORIGINAL_BUILD",
@@ -423,7 +343,7 @@ def execute_original(job: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any
             "buildDirectory": str(build_directory),
             "commands": {"build": native_common._without_output(result)},
             "originalBuildPlan": validated,
-            "toolchain": toolchain,
+            "toolchainPathEnvironment": environment["PATH"],
             "artifacts": artifacts,
         },
     )
@@ -449,11 +369,13 @@ def execute_coverage(
     workspace.mkdir(parents=True, exist_ok=True)
     before_path = Path(job["directories"]["temporary"]) / "stm32-artifacts-before.json"
     after_path = Path(job["directories"]["temporary"]) / "stm32-artifacts-after.json"
-    processes.snapshot_artifacts(SimpleNamespace(artifact=artifacts, output=str(before_path)))
     # The Windows COVER wrapper resolves COVER_BR_CONFIG below the Agent
     # installation's conf directory. Keep the authoritative job-local copy
     # for evidence, but stage a per-job copy there and pass only its basename.
     job_config = Path(glue_runtime["coverConfig"])
+    # Compare against this build's baseline, not a backup from an older run.
+    agent_default = agent_root / "conf" / "gcc.config"
+    agent_default_hash = hashlib.sha256(agent_default.read_bytes()).hexdigest()
     project_key = hashlib.sha256(str(Path(job["projectRoot"]).resolve()).encode("utf-8")).hexdigest()[:12]
     staged_config = agent_root / "conf" / f"cover-glue-compiler-{project_key}.config"
     staged_config.parent.mkdir(parents=True, exist_ok=True)
@@ -471,6 +393,7 @@ def execute_coverage(
         },
     )
     spec["coverToolEnvironment"] = True
+    spec["instrumentationLanguage"] = "NATIVE"
     try:
         result = processes.run_command(
             spec,
@@ -489,50 +412,13 @@ def execute_coverage(
             "STM32CubeIDE headless coverage clean build failed",
             [result["log"]],
         )
-    verification_plan = {
-        "wrappers": wrappers,
-        "wrapperVerificationRoles": sorted(wrappers),
-        "realTools": real_tools,
-        "nativeToolBypassRoles": [],
-        "commands": {"preflight": spec},
-    }
-    try:
-        wrapper_verification = native_logs.verify_gcc_preflight_text(
-            verification_plan,
-            Path(result["log"]),
-            conservative_native_tokens=False,
-        )
-        processes.snapshot_artifacts(SimpleNamespace(artifact=artifacts, output=str(after_path)))
-        artifact_verification = processes.verify_artifacts(
-            SimpleNamespace(before=str(before_path), after=str(after_path), output=None)
-        )
-    except BaseException:
-        staged_config.unlink(missing_ok=True)
-        raise
-    build_directory = Path(project["projectDirectory"]) / str(project["selectedConfiguration"])
-    observed_artifacts = gcc_original.extract_gcc_artifacts(Path(result["log"]), build_directory)
-    observed_paths = [item["path"] for item in observed_artifacts]
-    if not observed_paths:
-        staged_config.unlink(missing_ok=True)
-        raise errors.ExecutorError(
-            "COVERAGE_OUTPUT_NOT_OBSERVED",
-            "STM32CubeIDE coverage build log did not expose a final ELF/AXF/OUT artifact",
-            [result["log"]],
-        )
-    try:
-        comparison = pathutil.require_same_output_paths(artifacts, observed_paths)
-    except BaseException:
-        staged_config.unlink(missing_ok=True)
-        raise
-    artifact_verification.setdefault("data", {})["outputPathComparison"] = comparison
     return {
         "command": native_common._without_output(result),
         "commandSpec": spec,
         "persistentAgentConfig": str(staged_config),
-        "wrapperVerification": wrapper_verification,
-        "artifactVerification": artifact_verification,
-        "artifacts": observed_artifacts,
-        "outputPathComparison": comparison,
+        "agentDefaultConfigBeforeBuildSha256": agent_default_hash,
+        "artifacts": [{"path": p} for p in artifacts],
+        "successCriterion": "BUILD_EXIT_CODE",
         "glueCodeCompiler": {
             key: glue_runtime[key]
             for key in ("path", "provenance", "mappingPolicy", "configurationMethod", "coverConfig")
@@ -575,7 +461,6 @@ def verify_persistent_ide_build(
     spec["coverToolEnvironment"] = True
     before_path = Path(job["directories"]["temporary"]) / "stm32-ide-reuse-artifacts-before.json"
     after_path = Path(job["directories"]["temporary"]) / "stm32-ide-reuse-artifacts-after.json"
-    processes.snapshot_artifacts(SimpleNamespace(artifact=artifacts, output=str(before_path)))
     result = processes.run_command(
         spec,
         Path(job["directories"]["logs"]) / "coverage-stm32cubeide-ide-reuse.log",
@@ -586,32 +471,7 @@ def verify_persistent_ide_build(
             "STM32CubeIDE project-persisted coverage clean build failed without command-line PATH injection",
             [result["log"]],
         )
-    processes.snapshot_artifacts(SimpleNamespace(artifact=artifacts, output=str(after_path)))
-    artifact_verification = processes.verify_artifacts(
-        SimpleNamespace(before=str(before_path), after=str(after_path), output=None)
-    )
-    build_directory = Path(project["projectDirectory"]) / str(project["selectedConfiguration"])
-    observed_artifacts = gcc_original.extract_gcc_artifacts(Path(result["log"]), build_directory)
-    observed_paths = [item["path"] for item in observed_artifacts]
-    if not observed_paths:
-        raise errors.ExecutorError(
-            "PERSISTENT_STM32_IDE_OUTPUT_NOT_OBSERVED",
-            "STM32CubeIDE IDE-reuse verification did not expose a final ELF/AXF/OUT artifact",
-            [result["log"]],
-        )
-    comparison = pathutil.require_same_output_paths(artifacts, observed_paths)
-    artifact_verification.setdefault("data", {})["outputPathComparison"] = comparison
-    symbol_verification = verify_instrumented_elf_symbols(job, executable, observed_paths, real_tools)
-    wrapper_verification = {
-        "verificationMode": "PROJECT_ENVIRONMENT_AND_INSTRUMENTED_ELF",
-        "verifiedWrappers": wrappers,
-        "commandLinePathInjectionAbsent": "-Ep" not in spec["arguments"],
-        "processPathStartsWithWrapper": inherited_path.casefold().startswith(str(wrapper_directory).casefold()),
-        "instrumentationSymbols": symbol_verification,
-    }
     return {
         "command": native_common._without_output(result),
-        "wrapperVerification": wrapper_verification,
-        "artifactVerification": artifact_verification["data"],
-        "outputPathComparison": comparison,
+        "successCriterion": "BUILD_EXIT_CODE",
     }

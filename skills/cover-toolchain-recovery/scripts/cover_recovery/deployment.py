@@ -101,7 +101,7 @@ def _planned_operation(case: dict, *, server_url: str, plan_digest: str) -> tupl
     attempt = verified_attempt(case)
     plan = read_json(Path(case["run_dir"]) / "publish-plan.json")
     operation = plan.get("operation")
-    if not isinstance(operation, dict) or operation.get("schema_version") != 3:
+    if not isinstance(operation, dict) or operation.get("schema_version") != 4:
         raise RecoveryError("InvalidPublishPlan", "현재 형식으로 publish-plan을 다시 생성하고 변경 범위를 확인하세요.")
     digest = digest_json(operation)
     if not plan_digest or plan_digest != digest or digest != case.get("publish_plan_digest"):
@@ -126,6 +126,12 @@ def prepare_publish(case_path: Path, client, *, server_url: str, hardware_id: st
             raise RecoveryError("PublishAlreadyStarted", "이미 서버 반영을 시작했습니다. 현재 상태를 먼저 확인하세요.")
         _check_no_handoff(case)
         attempt = verified_attempt(case)
+        from .cover_api import CoverOpenApiClient, _mac_address
+        collection = case["collection"]
+        with CoverOpenApiClient(server_url, allow_http=True) as destination, CoverOpenApiClient(collection["server_url"], allow_http=True) as verified:
+            if (destination.api_base_url != verified.api_base_url
+                    or _mac_address(hardware_id) != _mac_address(collection["hardware_id"])):
+                raise RecoveryError("ServerMismatch", "검증한 서버·Agent에만 설정을 반영할 수 있습니다.")
         logical = Path(attempt["portable_conf_path"])
         if not logical.resolve().is_relative_to(Path(case["run_dir"]).resolve()):
             raise RecoveryError("UnsafeConfig", "배포 설정이 실행 폴더 밖에 있습니다.")
@@ -146,13 +152,13 @@ def prepare_publish(case_path: Path, client, *, server_url: str, hardware_id: st
         name_suffix = uuid.uuid4().hex[:8]
         proposed, metadata_evidence = _proposed_toolchain(old, lines, expected_hash, name_suffix)
         operation = {
-            "schema_version": 3, "server_url": server_url, "hardware_id": hardware_id,
+            "schema_version": 4, "server_url": server_url, "hardware_id": hardware_id,
             "agent_id": agent["id"], "wrapper_name": wrapper_name,
             "previous_toolchain_id": old["id"], "previous_toolchain": old,
             "agent_snapshot": agent, "proposed_toolchain": proposed,
             "name_suffix": name_suffix, "metadata_evidence": metadata_evidence,
             "conf_path": str(logical), "conf_sha256": expected_hash,
-            "runtime_conf_sha256": attempt["conf_sha256"],
+            "snapshot_conf_sha256": attempt["conf_sha256"],
             "attempt_workspace": attempt["workspace"],
             "verification_manifest_sha256": attempt["verification_manifest_sha256"],
         }
@@ -173,7 +179,7 @@ def apply_publish(case_path: Path, client, *, server_url: str,
         attempt, operation = _planned_operation(
             case, server_url=server_url, plan_digest=plan_digest,
         )
-        if (operation["runtime_conf_sha256"] != attempt["conf_sha256"]
+        if (operation["snapshot_conf_sha256"] != attempt["conf_sha256"]
                 or operation["attempt_workspace"] != attempt["workspace"]
                 or operation["verification_manifest_sha256"] != attempt["verification_manifest_sha256"]
                 or operation["conf_path"] != attempt["portable_conf_path"]

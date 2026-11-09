@@ -10,8 +10,9 @@ from typing import Any
 import project_index
 
 from cover_build.core import original_build_evidence, state_store
+from cover_build.core.errors import WorkflowWaiting
 from cover_build.common.fileio import write_json
-from cover_build.planning import survey
+from cover_build.planning import survey, execution_environment
 from cover_build.common import envelopes
 from cover_build.common import fileio
 
@@ -51,6 +52,13 @@ def job_project_input_fingerprint(job: dict[str, Any]) -> str | None:
         return None
     return project_index.input_fingerprint(fileio.load_json(path))
 
+def with_output_tracking(plan, choices):
+    """A tracking-only reply supplements the selected plan, not its provenance."""
+    if "outputTracking" not in choices:
+        return plan
+    return fileio.add_integrity({**plan, "outputTracking": choices["outputTracking"]})
+
+
 def finalize_environment_survey_plan(
     job: dict[str, Any],
     stages: list[dict[str, Any]],
@@ -65,6 +73,17 @@ def finalize_environment_survey_plan(
             "SKIPPED",
             {"path": str(path), "reason": "PRE_BUILD_SURVEY_NOT_CREATED"},
         )
+    try:
+        project_index.bind_build_outputs(
+            job["projectRoot"], job_work_path(job, "temporary", "project-index.json"), plan)
+    except ValueError as exc:
+        raise WorkflowWaiting(
+            "BUILD_OUTPUT_TRACKING_REQUIRED",
+            f"{exc}; submit only outputTracking (absolute directories/files and reason).",
+            {"outputTracking": {}}, decision_owner="MODEL", purpose="ORIGINAL_BUILD_COMMAND",
+            evidence=[str(plan.get("adapterEntry", ""))]) from exc
+    # Recheck on every resume, before any checkpoint can skip plan validation.
+    execution_environment.require_review(job, plan)
     def finalize() -> dict[str, Any]:
         current = survey.load_survey(path)
         updated = survey.finalize_original_build_selection(current, plan)

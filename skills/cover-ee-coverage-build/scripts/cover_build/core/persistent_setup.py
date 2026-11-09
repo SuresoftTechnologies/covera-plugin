@@ -453,6 +453,7 @@ def _publish_verified_setup(
                 "schema": SCHEMA,
                 "state": "APPLIED",
                 "sourceJobId": job["jobId"],
+                "archivePolicy": job.get("archivePolicy"),
                 "verifiedAt": fileio.utc_now(),
                 "projectRoot": str(Path(job["projectRoot"]).resolve()),
                 "buildSystem": build_system,
@@ -466,6 +467,7 @@ def _publish_verified_setup(
                 "requirements": [
                     "COVER Local Agent and the mapped toolchain must remain available",
                     "Run the project-local build-coverage entrypoint from a normal terminal",
+                    *(["Archive mode " + job["archivePolicy"]["requiredMode"] + " is required on Agent " + job["archivePolicy"]["agentRoot"] + "; use the coverage workflow to apply it temporarily and restore it afterward. IDE/manual commands do not manage this setting."] if job.get("archivePolicy") else []),
                 ],
             }
         )

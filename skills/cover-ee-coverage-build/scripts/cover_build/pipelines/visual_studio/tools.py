@@ -260,19 +260,26 @@ def extract_toolchain_from_diagnostic(
         except UnicodeDecodeError:
             text = raw.decode(locale.getpreferredencoding(False), errors="replace")
     response_search_directories = [Path(value) for value in working_directories or []]
+    # Cache directory/tool normalization only for this completed log analysis.
+    directory_cache: dict[str, Path] = {}
+    tool_paths: dict[str, Path] = {}
     candidates: dict[str, list[dict[str, Any]]] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        raw_paths = _diagnostic_tool_paths(line)
+        if not raw_paths:
+            continue
         analysis = native_logs.analyze_native_command_text(line)
         response_expansion = native_logs.expand_response_file_tokens(
             analysis["tokens"],
             response_search_directories[0] if response_search_directories else None,
             search_directories=response_search_directories[1:],
+            directory_cache=directory_cache,
         )
         expanded_tokens = response_expansion["tokens"]
         has_compile_flag = any(token.casefold() in {"-c", "/c"} for token in expanded_tokens)
         has_output_flag = any(token.casefold().startswith("/out:") for token in expanded_tokens)
-        for raw_path in _diagnostic_tool_paths(line):
+        for raw_path in raw_paths:
             path = Path(raw_path)
             definition = MSVC_TOOL_ROLES.get(path.name.casefold())
             if definition is None:
@@ -283,7 +290,10 @@ def extract_toolchain_from_diagnostic(
             if role in {"linker", "archiver"} and not has_output_flag:
                 continue
             try:
-                canonical = pathutil.canonical(path)
+                canonical = tool_paths.get(raw_path)
+                if canonical is None:
+                    canonical = pathutil.canonical(path)
+                    tool_paths[raw_path] = canonical
             except errors.ExecutorError:
                 continue
             item = {
@@ -298,7 +308,7 @@ def extract_toolchain_from_diagnostic(
             if response_expansion["unresolvedResponseFiles"]:
                 item["unresolvedResponseFiles"] = response_expansion["unresolvedResponseFiles"]
             role_candidates = candidates.setdefault(wrapper, [])
-            if not any(pathutil.same_path(current["path"], canonical) for current in role_candidates):
+            if not any(os.path.normcase(current["path"]) == os.path.normcase(str(canonical)) for current in role_candidates):
                 role_candidates.append(item)
 
     artifact_list = [artifacts] if isinstance(artifacts, Path) else list(artifacts)

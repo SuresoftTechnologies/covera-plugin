@@ -276,6 +276,13 @@ def _apply_stm32_agent_config(
         )
 
     current = target.read_bytes()
+    baseline_hash = details.get("agentDefaultConfigBeforeBuildSha256")
+    if baseline_hash and hashlib.sha256(current).hexdigest() != baseline_hash:
+        raise errors.ExecutorError(
+            "PERSISTENT_SETUP_CONCURRENT_CHANGE",
+            "Agent gcc.config changed during the coverage build; refusing to overwrite it",
+            [str(target)],
+        )
     side_backup = target.with_name(target.name + ".cover-ee-backup")
     side_backup_created = False
     if side_backup.exists():
@@ -285,13 +292,16 @@ def _apply_stm32_agent_config(
                 "The STM32 Agent config backup path is not a regular file",
                 [str(side_backup)],
             )
-        original = side_backup.read_bytes()
-        if current not in {original, applied}:
+        historical_original = side_backup.read_bytes()
+        if not baseline_hash and current not in {historical_original, applied}:
             raise errors.ExecutorError(
                 "PERSISTENT_SETUP_CONCURRENT_CHANGE",
                 "Agent gcc.config changed after its COVER backup was created; refusing to overwrite it",
                 [str(target), str(side_backup)],
             )
+        # Preserve the historical backup, but rollback this invocation to its
+        # own baseline. Older callers retain the original compatibility path.
+        original = current if baseline_hash else historical_original
     else:
         original = current
         temporary_backup = side_backup.with_name(side_backup.name + ".cover-ee-tmp")

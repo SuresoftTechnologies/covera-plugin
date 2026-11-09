@@ -1,4 +1,4 @@
-"""COVER Open API v1을 환경변수의 Access key로 호출한다.
+"""COVER Open API와 TMPA API를 환경변수의 Access key로 호출한다.
 
 Access key는 파일이나 로그에 남기지 않는다. 서버 변경 범위 확인은 호출자 책임이며,
 변경 결과를 확인할 수 없으면 자동 재전송 없이 AmbiguousWrite를 반환한다.
@@ -151,12 +151,14 @@ class CoverOpenApiClient:
             base_path = base_path[:-3]
         if not base_path.endswith("/cover-open-api"):
             base_path += "/cover-open-api"
-        base_path += "/v1"
-        self.api_base_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, base_path, "", ""))
+        open_api_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, base_path, "", ""))
+        self.api_base_url = open_api_url + "/v1"
+        self.tmpa_base_url = open_api_url + "/ai-agent-kit"
         self.timeout = timeout
         self.max_response_bytes = max_response_bytes
         self.max_archive_bytes = max_archive_bytes
         self._access_key = None
+        self.last_issue_metadata = {}
         tls_context = ssl._create_unverified_context() if insecure_tls else ssl.create_default_context()
         self._opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
@@ -174,15 +176,53 @@ class CoverOpenApiClient:
         """메모리에 보관한 Access key 참조를 해제한다."""
         self._access_key = None
 
-    def _request(
-        self, method: str, endpoint: str, *, query: dict | None = None,
+    def _request_open_api(self, method: str, endpoint: str, *, mutation: bool = False, **kwargs):
+        """Existing API: a failed server write may already have been applied."""
+        try:
+            return self._send_request(self.api_base_url, method, endpoint, mutation=mutation, **kwargs)
+        except urllib.error.HTTPError as error:
+            status = error.code
+            error.close()
+            details = {"method": method, "endpoint": endpoint, "retry_allowed": False, "status": status}
+            if mutation and (status >= 500 or 300 <= status < 400):
+                raise RecoveryError("AmbiguousWrite", "서버 변경 결과를 확인할 수 없음. 재전송하지 말고 서버 상태를 확인해야 함.", details) from None
+            raise RecoveryError("ApiHttpError", "COVER API가 요청을 거절함.", details) from None
+
+    def _request_tmpa(self, method: str, endpoint: str, *, mutation: bool = False, **kwargs):
+        """TMPA API: an HTTP 4xx/5xx rejection guarantees no run was created."""
+        try:
+            return self._send_request(self.tmpa_base_url, method, endpoint, mutation=mutation, **kwargs)
+        except urllib.error.HTTPError as error:
+            status = error.code
+            api_code = None
+            try:
+                body = error.read(self.max_response_bytes + 1)
+                if len(body) <= self.max_response_bytes:
+                    candidate = json.loads(body).get("code")
+                    if isinstance(candidate, str) and candidate in {"TMPA_RUN_BUSY", "ISSUE_OUTDATED", "ERROR_ARCHIVE_NOT_AVAILABLE"}:
+                        api_code = candidate
+            except (OSError, ValueError, AttributeError, http.client.HTTPException):
+                pass
+            finally:
+                error.close()
+            details = {"method": method, "endpoint": endpoint, "retry_allowed": False, "status": status}
+            if api_code:
+                if mutation:
+                    details["run_created"] = False
+                raise RecoveryError(api_code, "TMPA 요청이 거절되었습니다. 원인을 확인하세요.", details) from None
+            if mutation and 300 <= status < 400:
+                raise RecoveryError("AmbiguousWrite", "서버 변경 결과를 확인할 수 없음. 재전송하지 말고 서버 상태를 확인해야 함.", details) from None
+            raise RecoveryError("ApiHttpError", "COVER API가 요청을 거절함.", details) from None
+
+    def _send_request(
+        self, base_url: str, method: str, endpoint: str, *, query: dict | None = None,
         payload: Any = None, statuses: tuple[int, ...] = (200,),
         accept: str = "application/json", limit: int | None = None,
         mutation: bool = False,
     ) -> tuple[bytes, str, dict[str, str]]:
         if not self._access_key:
             raise RecoveryError("AccessKeyRequired", "COVER Access key 환경변수를 먼저 설정해야 함.")
-        url = self.api_base_url + endpoint
+        url = base_url + endpoint
         if query:
             url += "?" + urllib.parse.urlencode(query)
         headers = {"Accept": accept, "Accept-Encoding": "identity", "User-Agent": "cover-toolchain-recovery/1"}
@@ -222,20 +262,22 @@ class CoverOpenApiClient:
                 safe_headers = {"status": str(status)}
                 if response.headers.get("failed-fetch-file-count") is not None:
                     safe_headers["failed-fetch-file-count"] = response.headers["failed-fetch-file-count"]
+                if response.headers.get("X-Issue-Occurred-Time") is not None:
+                    safe_headers["X-Issue-Occurred-Time"] = response.headers["X-Issue-Occurred-Time"]
                 if content_type == "text/html" or data.lstrip().lower().startswith((b"<!doctype html", b"<html")):
                     raise RecoveryError("HtmlApiResponse", "API 대신 HTML 페이지가 반환됨. Open API 주소를 확인해야 함.", details)
                 return data, content_type, safe_headers
         except urllib.error.HTTPError as error:
             status = error.code
-            error.close()
             if status == 401:
+                error.close()
                 self.close()
                 raise RecoveryError("AuthenticationFailed", "COVER Access key가 거절되었거나 만료됨.", {**details, "status": status}) from None
             if status == 403:
+                error.close()
                 raise RecoveryError("PermissionDenied", "이 COVER 작업을 수행할 권한이 없음.", {**details, "status": status}) from None
-            if mutation and (status >= 500 or 300 <= status < 400):
-                raise RecoveryError("AmbiguousWrite", "서버 변경 결과를 확인할 수 없음. 재전송하지 말고 서버 상태를 확인해야 함.", {**details, "status": status}) from None
-            raise RecoveryError("ApiHttpError", "COVER API가 요청을 거절함.", {**details, "status": status}) from None
+            # Each API owns its HTTP failure semantics and closes the error response.
+            raise
         except _RedirectRejected as error:
             code = "AmbiguousWrite" if mutation else "UnsafeRedirect" if error.cross_origin else "ApiRedirect"
             raise RecoveryError(code, "API 리다이렉트를 따르지 않음. 요청을 자동 재전송하지 않았음.", {**details, "cross_origin": error.cross_origin}) from None
@@ -259,12 +301,20 @@ class CoverOpenApiClient:
             raise RecoveryError("InvalidApiResponse", "API 응답의 최상위 형식이 잘못됨.")
         return result
 
-    def _json(self, method: str, endpoint: str, *, expected_type: type = dict, **kwargs) -> Any:
-        data, content_type, _ = self._request(method, endpoint, **kwargs)
+    def _json_open_api(self, method: str, endpoint: str, *, expected_type: type = dict, **kwargs) -> Any:
+        response = self._request_open_api(method, endpoint, **kwargs)
+        return self._decode_json_response(response, expected_type, mutation=kwargs.get("mutation", False))
+
+    def _json_tmpa(self, method: str, endpoint: str, *, expected_type: type = dict, **kwargs) -> Any:
+        response = self._request_tmpa(method, endpoint, **kwargs)
+        return self._decode_json_response(response, expected_type, mutation=kwargs.get("mutation", False))
+
+    def _decode_json_response(self, response, expected_type: type, *, mutation: bool) -> Any:
+        data, content_type, _ = response
         try:
             return self._parse_json(data, content_type, expected_type)
         except RecoveryError as error:
-            if kwargs.get("mutation"):
+            if mutation:
                 raise RecoveryError("AmbiguousWrite", "서버 변경 응답이 유효한 JSON이 아님. 자동 재전송하지 않았음.", {"reason": error.code, "retry_allowed": False}) from None
             raise
 
@@ -283,10 +333,11 @@ class CoverOpenApiClient:
 
     def download_issue_archive(self, source_path: str, hardware_id: str) -> bytes:
         """서버가 MAC 주소와 전체 소스 경로로 선택한 최신 PA 오류 ZIP을 받는다."""
+        self.last_issue_metadata = {}
         _required_string(source_path, "source_path")
         if not (source_path.startswith("/") or ntpath.isabs(source_path) and ntpath.splitdrive(source_path)[0]):
             raise RecoveryError("InvalidInput", "최신 오류 선택에는 소스 전체 경로가 필요함.")
-        data, content_type, headers = self._request(
+        data, content_type, headers = self._request_open_api(
             "GET", "/issue/download", query={"macAddress": _mac_address(hardware_id),
                 "sourceFilePath": source_path, "withSource": "true", "issueWorkType": "PA_ERROR_RESULT"},
             statuses=(200, 206), accept="application/zip", limit=self.max_archive_bytes,
@@ -305,10 +356,70 @@ class CoverOpenApiClient:
                     raise zipfile.BadZipFile("empty archive")
         except (zipfile.BadZipFile, OSError, ValueError):
             raise RecoveryError("InvalidArchive", "유효한 오류 ZIP 자료를 받지 못함.") from None
+        occurred = headers.get("X-Issue-Occurred-Time")
+        if occurred:
+            from datetime import datetime
+            try:
+                parsed_time = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
+                if parsed_time.tzinfo is not None:
+                    self.last_issue_metadata["occurred_time"] = parsed_time.isoformat()
+            except ValueError:
+                pass
         return data  # 파일 생성과 안전한 압축 해제는 별도 자료 수집 계층의 책임.
 
+    @staticmethod
+    def _run_id(run_id: str) -> str:
+        if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", run_id):
+            raise RecoveryError("InvalidApiResponse", "TMPA runId는 32자리 16진수여야 함.")
+        return run_id
+
+    def start_tmpa_run(self, source_path: str, hardware_id: str, compiler_id: int,
+                       toolchain_content: list[str], platform: str | None = None) -> str:
+        _required_string(source_path, "source_path")
+        if not (source_path.startswith("/") or ntpath.isabs(source_path) and ntpath.splitdrive(source_path)[0]):
+            raise RecoveryError("InvalidInput", "TMPA 요청에는 소스 전체 경로가 필요함.")
+        if type(compiler_id) is not int or not 1 <= compiler_id <= 2147483647:
+            raise RecoveryError("InvalidInput", "compilerId는 양의 int32여야 함.")
+        if (not isinstance(toolchain_content, list) or not toolchain_content or
+                any(not isinstance(line, str) or any(c in line for c in "\r\n\x00") for line in toolchain_content)):
+            raise RecoveryError("InvalidInput", "toolChainContent에는 전체 설정을 한 줄씩 넣어야 함.")
+        payload = {"macAddress": _mac_address(hardware_id), "sourceFilePath": source_path,
+                   "compilerId": compiler_id, "toolChainContent": toolchain_content}
+        if platform is not None:
+            if platform not in {"win", "linux"}:
+                raise RecoveryError("InvalidInput", "platform은 빌드 PC의 win 또는 linux여야 함.")
+            payload["platform"] = platform
+        result = self._json_tmpa("POST", "/tmpa-run", payload=payload, mutation=True)
+        try:
+            return self._run_id(result.get("runId"))
+        except RecoveryError:
+            raise RecoveryError("AmbiguousWrite", "실행 ID를 확인하지 못했습니다. POST를 자동 재전송하지 않습니다.") from None
+
+    def get_tmpa_run(self, run_id: str) -> dict:
+        result = self._json_tmpa("GET", "/tmpa-run/" + self._run_id(run_id))
+        if (not isinstance(result.get("status"), str)
+                or result["status"] not in {"RUNNING", "SUCCEEDED", "FAILED", "TIMEOUT", "ERROR"}
+                or not (result.get("tmpaRevision") is None or isinstance(result["tmpaRevision"], str))):
+            raise RecoveryError("InvalidApiResponse", "TMPA 상태 응답이 올바르지 않음.")
+        return {"status": result["status"], "tmpaRevision": result.get("tmpaRevision")}
+
+    def download_tmpa_error_archive(self, run_id: str) -> bytes:
+        data, content_type, _ = self._request_tmpa(
+            "GET", "/tmpa-run/" + self._run_id(run_id) + "/error-archive",
+            accept="application/zip", limit=self.max_archive_bytes,
+        )
+        if content_type != "application/zip":
+            raise RecoveryError("InvalidArchive", "TMPA 오류 응답이 ZIP 형식이 아님.")
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                if not archive.infolist():
+                    raise zipfile.BadZipFile("empty archive")
+        except (zipfile.BadZipFile, OSError, ValueError):
+            raise RecoveryError("InvalidArchive", "유효한 TMPA 오류 ZIP을 받지 못함.") from None
+        return data
+
     def list_agents(self) -> list[dict]:
-        items = self._json("GET", "/agents", expected_type=list)
+        items = self._json_open_api("GET", "/agents", expected_type=list)
         for item in items:
             if not isinstance(item, dict) or not isinstance(item.get("agentName"), str):
                 raise RecoveryError("InvalidApiResponse", "Agent 목록의 식별 정보가 잘못됨.")
@@ -349,7 +460,7 @@ class CoverOpenApiClient:
 
     def get_agent(self, hardware_id: str) -> dict:
         mac = _mac_address(hardware_id)
-        agent = self._json("GET", "/agent", query={"macAddress": mac})
+        agent = self._json_open_api("GET", "/agent", query={"macAddress": mac})
         self._validate_agent(agent)
         if self._response_mac(agent["macAddress"]) != mac:
             raise RecoveryError("StaleTarget", "요청한 MAC 주소와 다른 Agent가 반환됨.")
@@ -374,7 +485,7 @@ class CoverOpenApiClient:
             raise RecoveryError("InvalidApiResponse", "toolChainContent는 설정 줄의 배열이어야 함.")
 
     def list_toolchains(self) -> list[dict]:
-        items = self._json("GET", "/toolchain-infos", expected_type=list)
+        items = self._json_open_api("GET", "/toolchain-infos", expected_type=list)
         for item in items:
             if not isinstance(item, dict):
                 raise RecoveryError("InvalidApiResponse", "툴체인 목록 형식이 잘못됨.")
@@ -396,7 +507,7 @@ class CoverOpenApiClient:
         proposed = {key: copy.deepcopy(payload[key]) for key in _TOOLCHAIN_FIELDS}
         if any(item["aliasName"] == proposed["aliasName"] for item in self.list_toolchains()):
             raise RecoveryError("ConflictingToolchain", "같은 이름의 툴체인이 이미 존재함. 자동 재사용하지 않음.")
-        returned = self._json("POST", "/toolchain-infos", payload=proposed, statuses=(201,), mutation=True)
+        returned = self._json_open_api("POST", "/toolchain-infos", payload=proposed, statuses=(201,), mutation=True)
         try:
             self._validate_toolchain(returned, require_id=True)
             expected = {key: value for key, value in proposed.items() if key != "toolChainContent"}
@@ -445,7 +556,7 @@ class CoverOpenApiClient:
             if item["toolKind"] in _COMPILER_KINDS:
                 mapping["toolChainInfoId"] = item["toolChainInfo"]["id"]
             mappings.append(mapping)
-        returned = self._json("PATCH", "/agent", query={"macAddress": _mac_address(hardware_id)},
+        returned = self._json_open_api("PATCH", "/agent", query={"macAddress": _mac_address(hardware_id)},
                               payload={"toolChains": mappings}, mutation=True)
         try:
             self._validate_agent(returned)

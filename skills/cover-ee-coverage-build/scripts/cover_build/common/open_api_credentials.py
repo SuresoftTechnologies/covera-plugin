@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -98,16 +99,46 @@ def save(path: Path, *, open_api_server_url: str, access_key: str) -> None:
         ) from None
 
 
-def resolve_access_key() -> str | None:
-    """Return an already-available Access Key without prompting: env var, then the cached file."""
+def resolve_access_key(server_url: str | None = None) -> str | None:
+    """Use an explicit process key, or a cached key bound to the selected API server."""
     existing = os.environ.get("COVER_ACCESS_KEY")
     if existing:
         return existing
+    if not server_url:
+        return None
     path = _installed_credentials_path()
     if path is None:
         return None
     record = load(path)
-    return record["accessKey"] if record else None
+    if record is None:
+        return None
+    # Import locally: servers also uses this module to select the configured URL.
+    from cover_build.common.servers import open_api_server_origin
+
+    def identity(value: str) -> tuple:
+        parsed = urllib.parse.urlsplit(open_api_server_origin(value))
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("User information is not an API server identity")
+        return parsed.scheme, parsed.hostname, parsed.port if parsed.port is not None else 443, parsed.path
+
+    try:
+        matches = identity(server_url) == identity(record["openApiServerUrl"])
+    except (errors.ExecutorError, ValueError):
+        return None
+    return record["accessKey"] if matches else None
+
+
+def authentication_server_url(args: argparse.Namespace) -> str | None:
+    """Use the immutable job server on resume, otherwise select the new-job URL."""
+    if getattr(args, "job_context", None):
+        from cover_build.common.jobs import load_job_context
+        return load_job_context(args.job_context)["serverOrigin"]
+    try:
+        return resolve_open_api_server_url(args)[0]
+    except errors.ExecutorError as exc:
+        if exc.code == "OPEN_API_MAIN_WEB_SERVER_URL_REQUIRED":
+            return None  # No server means no cached key; the runner handles missing URL input.
+        raise
 
 
 def resolve_open_api_server_url(args: argparse.Namespace) -> tuple[str, str]:

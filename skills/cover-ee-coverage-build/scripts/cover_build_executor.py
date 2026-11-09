@@ -18,17 +18,19 @@ import json
 import subprocess
 import xml.etree.ElementTree as ET
 
-from cover_build.common import agent_host
+from cover_build.services import agent_host
 from cover_build.common import envelopes
-from cover_build.common import gcc_tools
+from cover_build.common import fileio
+from cover_build.planning import gcc_tools
 from cover_build.common import jobs
 from cover_build.common import open_api
 from cover_build.common import pathutil
 from cover_build.common import processes
 from cover_build.common import project_files
-from cover_build.common import toolchains
+from cover_build.services import toolchains
 from cover_build.core import errors
 from cover_build.pipelines.visual_studio import planning as vs_planning
+from cover_build.services import build_execution
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -144,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     item.add_argument("--glue-code-compiler")
     item.add_argument("--glue-compiler-provenance")
     item.add_argument("--configure-arg", action="append", default=[])
+    item.add_argument("--option-recovery", help="JSON file containing coverageOptionRecovery failure evidence; requires --job-context")
     item.add_argument("--require-role", action="append", choices=sorted(gcc_tools.GCC_ROLE_ENVIRONMENT), required=True)
     item.add_argument("--real-tool", action="append", default=[], metavar="ROLE=PATH")
     item.add_argument("--artifact", action="append", default=[])
@@ -206,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
     item.add_argument("--phase", required=True, choices=["preflight", "configure", "clean", "build", "rebuild"])
     item.add_argument("--log-dir", required=True)
     item.add_argument("--output")
-    item.set_defaults(handler=processes.execute_plan)
+    item.set_defaults(handler=build_execution.execute_plan)
 
     item = sub.add_parser("snapshot-artifacts")
     item.add_argument("--artifact", action="append", required=True)
@@ -250,9 +253,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init-job" and args.job_context:
             raise errors.ExecutorError("INVALID_JOB_CONTEXT", "init-job cannot consume an existing job context")
         if args.job_context:
-            CURRENT_JOB_ID = jobs.load_job_context(args.job_context)["jobId"]
+            job = jobs.load_job_context(args.job_context)
+            CURRENT_JOB_ID = job["jobId"]
         else:
+            job = None
             CURRENT_JOB_ID = None
+        if args.command == "plan-cmake":
+            if args.option_recovery:
+                if job is None:
+                    raise errors.ExecutorError("JOB_CONTEXT_REQUIRED", "--option-recovery requires --job-context")
+                args.option_recovery = fileio.load_json(args.option_recovery)
+            args.job_context = job
         result = args.handler(args)
         artifact_output_commands = {
             "create-vs-overlay",
@@ -265,6 +276,10 @@ def main(argv: list[str] | None = None) -> int:
         }
         envelopes.emit(result, None if args.command in artifact_output_commands else getattr(args, "output", None))
         return 0
+    except errors.WorkflowWaiting as exc:
+        envelopes.emit(envelopes.envelope(args.command.upper().replace("-", "_"), "WAITING_MODEL",
+            error={"code": exc.code, "message": str(exc), "evidence": exc.evidence}))
+        return 2
     except errors.ExecutorError as exc:
         envelopes.emit(envelopes.envelope(args.command.upper().replace("-", "_"), "FAILED", error={"code": exc.code, "message": str(exc), "evidence": exc.evidence}))
         return 2

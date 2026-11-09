@@ -21,9 +21,9 @@ SECRET_NAMES = (
 SESSION_MARKER = "COVER_CREDENTIAL_SESSION"
 
 
-def prompt_credentials() -> dict[str, str]:
+def prompt_credentials(server_url: str | None = None) -> dict[str, str]:
     """Prompt once without echoing secret values; reuse the env var or cached file first."""
-    existing = open_api_credentials.resolve_access_key()
+    existing = open_api_credentials.resolve_access_key(server_url)
     if existing:
         return {"COVER_ACCESS_KEY": existing}
     return {"COVER_ACCESS_KEY": getpass.getpass("COVER Access Key: ")}
@@ -58,7 +58,13 @@ def terminal_main(argv: list[str] | None = None) -> int:
         runner_args = runner_args[1:]
     if not runner_args:
         parser.error("provide cover_workflow_runner.py arguments after --")
-    values = prompt_credentials()
+    # Match the runner's argparse abbreviation behavior so abbreviated URL options
+    # cannot select a different destination after a cached key has been chosen.
+    destination_parser = argparse.ArgumentParser(add_help=False)
+    destination_parser.add_argument("--open-api-server-url")
+    destination_parser.add_argument("--job-context")
+    destination, _ = destination_parser.parse_known_args(runner_args)
+    values = prompt_credentials(open_api_credentials.authentication_server_url(destination))
     try:
         with scoped_credentials(values):
             if parsed.executor:

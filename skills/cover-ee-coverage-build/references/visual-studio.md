@@ -1,5 +1,10 @@
 # Visual Studio / MSBuild
 
+## 빌드 결과 판정 정책
+
+커버리지 빌드는 실행 명령의 종료 코드가 0이면 성공, 0이 아니면 실패로 판정한다. 탐침 여부를 확인하기 위한 래퍼 호출·우회 로그 검사, 심볼 검사, C#/Java 처리 건수 집계와 빌드 후 산출물 갱신·경로 비교는 수행하지 않는다. 재사용 설정으로 재빌드할 때도 종료 코드로 판정한다. 설정 적용 결과는 빌드 결과와 별도로 보고하며, 설정 적용 실패로 이미 성공한 빌드 결과를 변경하지 않는다. 원본 빌드의 도구·산출물 조사, 실행 전 설정·출력 경로 검증, 백업·복구는 유지한다.
+
+
 공통 COVER 환경, Agent 등록·실행과 자격 증명 처리는 `SKILL.md`와 `workflow.md`를 따른다. 여기서는 Visual Studio 환경의 판정, 원본 빌드, 커버리지 빌드만 다룬다.
 
 ## 판정 기준
@@ -100,7 +105,7 @@ vswhere.exe -all -products * -requires Microsoft.Component.MSBuild -format json 
 - 선택한 솔루션 구성에서 `Build.0`으로 활성화된 프로젝트별 `TargetPath`를 MSBuild로 평가한다.
   - 실행 파일 하나만 대표 산출물로 잡지 않는다.
   - 활성 프로젝트의 실행 파일·DLL·정적 라이브러리를 각각 예상 산출물로 기록한다.
-  - `ConfigurationType=Utility` 프로젝트는 빌드에는 포함하되 최종 산출물 검증 대상에서는 제외한다.
+  - `ConfigurationType=Utility` 프로젝트는 빌드에는 포함하되 원본 산출물 수집 대상에서는 제외한다.
   - 평가가 동적이거나 산출물 경로가 확정되지 않으면 `--artifact`를 반복 지정하도록 사용자에게 필요한 경로만 요청한다.
 
 ## 커버리지 빌드 설정 및 빌드
@@ -153,34 +158,24 @@ MSBuild overlay는 기존 프로젝트에 추가로 읽히는 설정 파일이�
 
 ### 커버리지 빌드 명령
 
-- 원본과 동일한 MSBuild, VsDevCmd 환경, 솔루션 구성·플랫폼을 사용한다.
-- 빌드 전에 예상 산출물의 크기·수정 시각·해시를 저장한다.
-- overlay를 적용해 `/t:Rebuild` 한 번 수행한다.
-- 진단 로그를 남긴다.
+- 원본과 동일한 MSBuild와 VsDevCmd 환경을 사용한다. 구성·플랫폼은 앞서 확정한 원본 빌드용 선택과 커버리지 빌드용 선택을 각각 유지한다.
+- 성공한 원본 명령의 실행 파일, 작업 디렉터리, 환경, 고객 속성, 응답 파일(`@파일`), 병렬도와 추가 옵션을 유지한다. `ForceImportBeforeCppTargets`와 `CoverWrapperDirectory`를 추가하거나 교체한다. 한 `/p:`에 여러 속성이 묶여 있어도 나머지 속성은 보존한다.
+- 원본은 `Debug|x64`, 커버리지는 `COVER|x64`로 선택했다면 커버리지 명령의 `Configuration`만 선택한 `COVER`로 바꾼다. 원본 계획 자체는 수정하지 않는다. 출력 경로 평가와 성공 후 속성 시트 연결도 커버리지용으로 선택한 프로젝트별 매핑 구성을 사용한다.
+- 기존 실행기가 보완하던 `VCTargetsPath`와 Windows SDK 속성은 계속 제공한다. 원본 명령에서 해당 속성을 명시했다면 그 값을 유지하고, 명시하지 않은 속성만 선택한 Visual Studio 환경의 값으로 보완한다.
+- 기본은 overlay를 적용한 `/t:Rebuild` 한 번이다. 원본에 명시적인 `Build`가 있으면 같은 범위의 `Rebuild`로 바꾼다. 별도 clean 또는 해당 프로젝트의 `Clean;Build` 순서가 있으면 그 절차를 유지한다.
+- 별도 clean도 `Build`·`Rebuild` 타깃도 없이 사용자 정의 타깃만 지정되어 있으면 같은 범위의 `Rebuild`를 앞에 추가한다. 예를 들어 `/t:app:Package`는 `/t:app:Rebuild;app:Package`로 실행한다. 패키징 타깃은 보존하되 증분 빌드로 탐침 적용이 생략되지 않게 한다. 이미 `Prepare;app:Build`처럼 빌드 타깃이 있으면 준비 타깃 앞에 추가 Rebuild를 넣지 않는다.
+- 원본 계획의 `diagnosticLog`를 지정한 파일 로거만 `<프로젝트>/.cover-build/coverage-msbuild-diagnostic.log`로 돌린다. 원본 도구 확인에 사용한 진단 로그를 덮어쓰지 않기 위한 처리이며, 다른 고객 로거 옵션은 유지한다. 실행기 자체의 시도별 로그도 기존처럼 기록한다.
 - 고객 절차상 `Rebuild`를 사용할 수 없을 때만 검증된 `Clean` 후 `Build`를 사용한다.
+- 원본 명령이 셸·스크립트를 실행한다면 실행기를 MSBuild로 몰래 바꾸거나 스크립트 인수에 MSBuild 속성을 붙이지 않는다. `NATIVE_WRAPPER_INJECTION_UNRESOLVED`에서 준비 작업과 실제 MSBuild 호출을 모델이 확인한다.
+- 성공 후 재사용 명령과 프로젝트 import 적용 검증도 같은 명령을 사용한다. import 검증에서는 임시 래퍼 속성 두 개만 제거한다.
 
-### 래퍼 적용 확인
+### 빌드 결과와 출력 경로
 
-- 실제 `/t:Rebuild` diagnostic 출력에서 원본 빌드로 관찰한 역할별 `CL.exe`, `link.exe`, 필요한 경우 `lib.exe` 래퍼 호출을 확인한다.
-- Agent 로그에서 래퍼 요청과 매핑된 네이티브 도구 실행을 확인한다.
-- 원본 빌드에서 관찰한 네이티브 도구 절대 경로가 컴파일·링크·아카이브 명령으로 직접 나타나면 우회로 판정한다.
-- 필수 래퍼가 하나라도 실제 빌드 출력에 없으면 실패로 판정한다.
-- overlay 적용이나 `where.exe` 결과만으로 성공 처리하지 않는다.
-- 일부 프로젝트나 일부 소스만 네이티브 도구를 직접 호출하면 실패로 판정한다.
-- 래퍼 선택 문제가 발생하면 해당 실패 로그를 기준으로 `ExecutablePath`, `UseEnv`, 사용자 정의 도구 경로를 진단한다.
-
-### 산출물 경로 확인
-
-- 원본 진단 로그에서 평가·관찰한 `TargetPath`, `OutDir`, `OutputPath`, `BaseIntermediateOutputPath`, `IntermediateOutputPath`와 최종 `.exe`/`.dll`/`.lib` 절대 경로를 보존한다.
-- 별칭 솔루션이나 복제한 저장소, 작업마다 달라지는 프로젝트 경로를 만들지 않는다. overlay는 래퍼 탐색 순서만 바꾸고 출력 경로 속성은 건드리지 않는다.
-- `${SKILL_ROOT}/scripts/cover_build_executor.py verify-output-paths`로 원본·커버리지 경로를 비교하고 `sameAsOriginal=true`가 아니면 `COVERAGE_OUTPUT_PATH_CHANGED`로 중단한다.
-
-### 성공 판정
-
-- 커버리지 `Rebuild` 종료 코드가 정상이어야 한다.
-- 실제 래퍼 호출을 확인한다.
-- 활성 프로젝트별 예상 산출물이 이번 커버리지 빌드에서 새로 생성되거나 갱신됐는지 확인한다.
-- 모든 최종 산출물의 절대 경로가 원본과 동일해야 한다(`sameAsOriginal=true`).
+- 커버리지 `Rebuild` 종료 코드가 0이면 성공으로 판정한다.
+- 래퍼 호출·우회 로그와 산출물 갱신 여부를 후속 성공 조건으로 검사하지 않는다.
+- 원본 진단 로그에서 확인한 `TargetPath`, `OutDir`, `OutputPath`, `BaseIntermediateOutputPath`, `IntermediateOutputPath`와 최종 `.exe`/`.dll`/`.lib` 경로를 계획에 보존한다.
+- 별칭 솔루션이나 복제 저장소를 만들지 않는다. overlay는 래퍼 탐색 순서만 바꾸고 출력 경로 속성은 변경하지 않는다.
+- 재사용 설정 적용과 재빌드 결과는 커버리지 빌드 결과와 구분해 보고한다.
 
 STATIC 문서의 Workspace/Project Key, Analyze & Upload, `static.vs.props`는 COVER EE 커버리지 빌드에 적용하지 않는다. 참고 범위는 컴파일러 래퍼를 MSBuild 도구 탐색 순서 앞에 두는 방식뿐이다.
 
@@ -190,5 +185,9 @@ STATIC 문서의 Workspace/Project Key, Analyze & Upload, `static.vs.props`는 C
 - 구성 선택은 위 [판정 기준](#판정-기준)을 따른다. 질문 횟수를 줄이기 위해 기존 산출물의 경로·최신 수정 시각만으로 구성을 선택하지 않는다. 이미 확인한 선택값은 결정 파일과 환경 프로필의 기존 재사용 조건에 따라 이어 쓴다.
 - 지정값이 없고 선택 프로젝트의 `PlatformToolset`이 한 세대로 모이면 `v143`→Visual Studio 2022, `v142`→2019처럼 정확히 대응하는 설치 세대를 사용한다. 대응 설치본이 여럿이거나 툴셋이 섞이면 모델 판단으로 남긴다.
 - 원본·커버리지 MSBuild에 고객 병렬도 근거가 없으면 CPU 기반 `/m:<N>`(최대 8)을 사용한다. 고객 명령의 `/m` 값이 있으면 보존한다.
-- 진단 로그를 남기는 원본 빌드, 실제 도구 추출, 산출물 검증은 한 번의 원본 `Rebuild` 결과를 함께 사용한다. 같은 구성을 툴체인 확인 목적으로 다시 빌드하지 않는다.
+- 진단 로그를 남기는 원본 빌드, 실제 도구 추출, 원본 산출물 조사는 한 번의 원본 `Rebuild` 결과를 함께 사용한다. 같은 구성을 툴체인 확인 목적으로 다시 빌드하지 않는다.
 - 인증 입력을 보완하거나 예상하지 못한 권한 오류를 해결한 뒤 같은 작업을 재개할 때는 빌드 설정 내용·소스·원본 계획이 같으면 성공한 원본 빌드 체크포인트를 재사용한다. 재사용 import를 동일 내용으로 해제·복원해 바뀐 `.vcxproj` 수정 시각만으로 원본 `Rebuild`를 반복하지 않는다.
+
+## 원본 툴체인 모델 판단
+
+원본 빌드 성공 후 공통 `ORIGINAL_TOOLCHAIN_REVIEW_REQUIRED` 결정을 처리한다. 로그에서 실행 도구와 역할을 자동 확정하지 않는다. 모델이 현재 작업의 `original-toolchain-evidence.json`과 로그·응답 파일을 검토하여 `originalToolchainDecision`을 제출한다. 스크립트는 인용·경로·해시를 검증한 후에만 Agent 매핑을 진행한다. 역할과 결정 형식은 SKILL.md의 모든 C/C++ 원본 툴체인 모델 판단 절차를 따른다.

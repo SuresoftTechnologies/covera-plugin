@@ -7,11 +7,12 @@ live in ``cover_build.pipelines``.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import sys
 import time
-from dataclasses import dataclass
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,7 @@ from cover_build.core.job_evidence import (
 )
 from cover_build.pipelines import registry as pipeline_registry
 from cover_build.common.processes import require_execution
-from cover_build.planning import build_plan, decision_file, selection, survey
+from cover_build.planning import build_plan, decision_file, option_recovery, selection, survey
 from cover_build.planning.resolution import (
     apply_model_fallback,
     fallback_source,
@@ -44,20 +45,21 @@ from cover_build.planning.resolution import (
 )
 from cover_build.common import envelopes
 from cover_build.common import fileio
+from cover_build.common import project_lock
+from cover_build.services import archive_policy
 from cover_build.common import jobs
 from cover_build.common import processes
 from cover_build.common import project_files
-from cover_build.common import toolchains
+from cover_build.services import toolchains
 from cover_build.core import errors
 
 
-@dataclass(frozen=True)
-class WorkflowRuntime:
-    prompt_credentials: Any
-    run_gcc: Any
-    run_stm32cubeide: Any
-    run_visual_studio: Any
-    select_build_system: Any
+def prompt_credentials(require_public: bool, server_url: str | None = None) -> None:
+    """Populate only this runner process; never serialize user-entered secrets."""
+    if not require_public or os.environ.get("COVER_ACCESS_KEY"):
+        return
+    cached = open_api_credentials.resolve_access_key(server_url)
+    os.environ["COVER_ACCESS_KEY"] = cached if cached else getpass.getpass("COVER Access Key: ")
 
 
 def apply_expected_artifact_decision(
@@ -81,22 +83,8 @@ def apply_expected_artifact_decision(
     return [str(resolve_fallback_artifact(job, value)) for value in fallback_artifacts]
 
 
-def run(
-    argv: list[str] | None = None,
-    *,
-    runtime: WorkflowRuntime,
-) -> int:
-    invocation_started_at, invocation_started = fileio.utc_now(), time.monotonic()
-    prompt_credentials = runtime.prompt_credentials
-    run_gcc = runtime.run_gcc
-    run_stm32cubeide = runtime.run_stm32cubeide
-    run_visual_studio = runtime.run_visual_studio
-    select_build_system = runtime.select_build_system
 
-    # 1. Parse a new job, resume request, or decision command.
-    raw_args = list(sys.argv[1:] if argv is None else argv)
-    if raw_args[:1] == ["decision"]:
-        return decision_file.decision_main(raw_args[1:])
+def _parse_arguments(raw_args):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", help="Project directory for a new workflow")
     parser.add_argument("--job-context", help="Resume this integrity-protected job.json")
@@ -176,403 +164,319 @@ def run(
         args.allow_agent_start = True
     if bool(args.project_root) == bool(args.job_context):
         parser.error("provide exactly one of --project-root or --job-context")
-    stages: list[dict[str, Any]] = []
-    job: dict[str, Any] | None = None
-    resolution: dict[str, Any] = {}
-    environment_context: dict[str, Any] | None = None
-    suspended_setup: dict[str, Any] | None = None
+    return args
+
+
+
+def _discover_environment(job, stages, args, choices):
+    index_path = Path(job["directories"]["temporary"]) / "project-index.json"
+    managed_path = Path(job["directories"]["temporary"]) / "managed-project-evidence.json"
+    profile_request = environment_profile.request_signature(args)
+    cached_profile, cache_reason = (None, "DISABLED_BY_REQUEST") if args.no_environment_profile else environment_profile.load(
+        job["projectRoot"],
+        choices,
+        request=profile_request,
+        job_id=job["jobId"],
+    )
+    # Not a model choice or a persisted permission: rebuild this only from a
+    # compatible, integrity-checked successful profile on every invocation.
+    args.verified_coverage_options = option_recovery.verified_profile_options(cached_profile, job["jobId"])
+
+    if cached_profile is not None:
+        choices = {**cached_profile["choices"], **choices}
+        index = cached_profile["projectIndex"]
+        managed_evidence = cached_profile["managedEvidence"]
+        discovery = envelopes.envelope(
+            "DISCOVERING_PROJECT",
+            "SUCCEEDED",
+            cached_profile["discoveryData"],
+        )
+        stm32cubeide_discovery = cached_profile["stm32CubeIDEDiscovery"]
+        write_json(index_path, index)
+        write_json(managed_path, managed_evidence)
+        record(
+            job,
+            stages,
+            1,
+            "reuse-environment-profile",
+            envelopes.envelope(
+                "REUSING_BUILD_ENVIRONMENT",
+                "SUCCEEDED",
+                {
+                    "path": str(environment_profile.path(job["projectRoot"])),
+                    "sourceJobId": cached_profile["sourceJobId"],
+                    "reason": cache_reason,
+                },
+            ),
+        )
+    else:
+        record(
+            job,
+            stages,
+            1,
+            "reuse-environment-profile",
+            envelopes.envelope(
+                "REUSING_BUILD_ENVIRONMENT",
+                "SKIPPED",
+                {"reason": cache_reason},
+            ),
+        )
+
+        def create_project_index() -> dict[str, Any]:
+            value, reused = project_index.load_or_build(job["projectRoot"], index_path)
+            if not reused:
+                write_json(index_path, value)
+            return envelopes.envelope(
+                "INDEXING_PROJECT",
+                "SUCCEEDED",
+                {"path": str(index_path), "schema": value["schema"], "scannedFileCount": value["scannedFileCount"], "reusedIndex": reused},
+            )
+
+        record(job, stages, 2, "index-project", create_project_index())
+        index = fileio.load_json(index_path)
+        index_fingerprint = project_index.input_fingerprint(index)
+
+        def collect_managed() -> dict[str, Any]:
+            value = project_discovery.detect_managed(Path(job["projectRoot"]), index)
+            write_json(managed_path, value)
+            return envelopes.envelope(
+                "DETECTING_MANAGED_PROJECT",
+                "SUCCEEDED",
+                {"path": str(managed_path), "routing": value["routing"]},
+            )
+
+        state_store.run_checkpointed(
+            job, stages, record, 2, "detect-managed-project", {"projectIndexFingerprint": index_fingerprint}, collect_managed
+        )
+        managed_evidence = fileio.load_json(managed_path)
+
+    route = str(managed_evidence.get("routing") or "NOT_MANAGED")
+    if route in {
+        "WAITING_MODEL_MIXED_MANAGED",
+        "WAITING_MODEL_MIXED_DOTNET_NATIVE",
+        "WAITING_MODEL_MIXED_BUILD_GRAPH",
+    }:
+        selected_route = choices.get("languageRoute")
+        candidates = []
+        if managed_evidence.get("csharp", {}).get("detected"):
+            candidates.append("CSHARP")
+        if managed_evidence.get("java", {}).get("detected"):
+            candidates.append("JAVA")
+        if route in {"WAITING_MODEL_MIXED_DOTNET_NATIVE", "WAITING_MODEL_MIXED_BUILD_GRAPH"} and (
+            managed_evidence.get("csharp", {}).get("nativeProjectFiles")
+            or managed_evidence.get("csharp", {}).get("nativeBuildEntries")
+        ):
+            candidates.append("NATIVE")
+        if selected_route in candidates:
+            route = str(selected_route)
+
+    if cached_profile is not None:
+        pass
+    elif route in {"CSHARP", "JAVA"}:
+        languages = {
+            "CSHARP": int(managed_evidence.get("csharp", {}).get("sourceCount") or 0),
+            "JAVA": int(managed_evidence.get("java", {}).get("sourceCount") or 0),
+        }
+        managed_systems = (
+            managed_evidence["csharp"].get("buildSystemCandidates")
+            if route == "CSHARP"
+            else managed_evidence["java"].get("buildSystemCandidates")
+        )
+        discovery = envelopes.envelope(
+            "DISCOVERING_PROJECT",
+            "SUCCEEDED",
+            {
+                "projectRoot": job["projectRoot"],
+                "projectLanguages": languages,
+                "candidateBuildSystems": list(managed_systems or []),
+                "unsupportedBuildSystems": [],
+                "files": [],
+            },
+        )
+        stm32cubeide_discovery = {"schema": "cover-stm32cubeide-discovery/v1", "status": "NOT_DETECTED", "projects": []}
+    else:
+        discovery = state_store.run_checkpointed(
+            job,
+            stages,
+            record,
+            2,
+            "discover-project",
+            {"projectIndexFingerprint": index_fingerprint},
+            lambda: project_files.discover_project(argument(root=job["projectRoot"], project_index=index)),
+        )
+        stm32_envelope = state_store.run_checkpointed(
+            job,
+            stages,
+            record,
+            2,
+            "detect-stm32cubeide",
+            {"projectIndexFingerprint": index_fingerprint},
+            lambda: envelopes.envelope(
+                "DETECTING_STM32CUBEIDE",
+                "SUCCEEDED",
+                project_discovery.detect_stm32cubeide(job["projectRoot"], index),
+            ),
+        )
+        stm32cubeide_discovery = stm32_envelope["data"]
+
+    environment_context = {
+        "choices": choices,
+        "request": profile_request,
+        "projectIndex": index,
+        "managedEvidence": managed_evidence,
+        "discovery": discovery,
+        "stm32CubeIDEDiscovery": stm32cubeide_discovery,
+    }
+    return choices, route, index, index_path, managed_path, managed_evidence, discovery, stm32cubeide_discovery, environment_context
+
+
+
+def _prepare_build_evidence(job, stages, choices, route, index, index_path, managed_path, managed_evidence, discovery, stm32cubeide_discovery):
+    unresolved = selection.collect_prebuild_decision_bundle(
+        discovery if route not in {"CSHARP", "JAVA"} else None,
+        stm32cubeide_discovery,
+        managed_evidence,
+        choices,
+    )
+    if unresolved:
+        raise WorkflowWaiting(
+            "PREBUILD_DECISION_BUNDLE_REQUIRED",
+            "원본 빌드를 시작하기 전에 확인 가능한 선택 항목을 한 번에 결정해야 합니다.",
+            unresolved,
+            decision_owner="MODEL",
+            purpose="BUILD_ENVIRONMENT",
+            evidence=[str(index_path), str(managed_path)],
+        )
+    build_evidence_path = Path(job["directories"]["temporary"]) / "build-evidence.json"
+    build_evidence = state_store.run_checkpointed(job, stages, record, 2, "collect-build-evidence-data",
+        {"projectInput": project_index.input_fingerprint(index), "route": route,
+         "executionHost": build_plan.execution_environment.host_context()},
+        lambda: envelopes.envelope("COLLECTING_BUILD_EVIDENCE", "SUCCEEDED",
+                                  build_plan.collect_build_evidence(job, discovery, stm32cubeide_discovery)))["data"]
+    write_json(build_evidence_path, build_evidence)
+    record(
+        job,
+        stages,
+        2,
+        "collect-build-evidence",
+        envelopes.envelope(
+            "COLLECTING_BUILD_EVIDENCE",
+            "SUCCEEDED",
+            {"path": str(build_evidence_path), "schema": build_plan.BUILD_EVIDENCE_SCHEMA},
+        ),
+    )
+    # 5. Freeze the pre-build survey, then dispatch one environment Pipeline.
+    environment_survey_path = job_work_path(job, "temporary", survey.SURVEY_FILENAME)
+    def collect_survey() -> dict[str, Any]:
+        environment_survey_value = survey.create_pre_build_survey(
+            job, discovery, stm32cubeide_discovery, build_evidence, choices)
+        survey.write_survey(environment_survey_path, environment_survey_value)
+        return envelopes.envelope("COLLECTING_COVER_ENVIRONMENT_SURVEY", "SUCCEEDED",
+            {"path": str(environment_survey_path), "phase": environment_survey_value["phase"]})
+    state_store.run_checkpointed(job, stages, record, 2, "collect-cover-environment-survey",
+        {"projectInput": project_index.input_fingerprint(index), "route": route,
+         "originalBuildPlan": choices.get("originalBuildPlan"),
+         "environment": state_store.input_digest({key: os.environ.get(key) for key in ("PATH", "CODESCROLL_TM_INSTALL_PATH")})},
+        collect_survey, validate=lambda _: environment_survey_path.is_file())
+    return build_evidence, build_evidence_path
+
+
+
+def _run_pipeline(job, stages, args, choices, route, managed_evidence, discovery, stm32cubeide_discovery, build_evidence, build_evidence_path, ensure_authentication):
+    if route == "CSHARP":
+        result = pipeline_registry.load_pipeline("CSHARP").run(
+            job, managed_evidence, choices, stages, args, record, ensure_authentication,
+            finalize_environment_survey_plan,
+            write_original_build_evidence,
+        )
+        supported_build_systems = []
+    elif route == "JAVA":
+        result = pipeline_registry.load_pipeline("JAVA").run(
+            job, managed_evidence, choices, stages, args, record, ensure_authentication,
+            finalize_environment_survey_plan,
+            write_original_build_evidence,
+        )
+        supported_build_systems = []
+    else:
+        supported_build_systems = discovery["data"]["candidateBuildSystems"]
+    if route in {"CSHARP", "JAVA"}:
+        build_system = route
+    elif (
+        stm32cubeide_discovery.get("status") == "NOT_DETECTED"
+        and not supported_build_systems
+        and "NINJA" in discovery["data"].get("unsupportedBuildSystems", [])
+    ):
+        raise WorkflowWaiting(
+            "NINJA_BUILD_UNSUPPORTED",
+            "A direct Ninja build has no supported owning entry; provide its CMake source/preset/cache or a direct Make entry",
+            {"supportedBuildSystem": ["CMAKE", "MAKE"]},
+            decision_owner="USER",
+            purpose="CUSTOMER_CONFIGURATION",
+            evidence=discovery["data"].get("unsupportedBuildFiles", []),
+        )
+    else:
+        build_system = selection.select_build_system(
+            supported_build_systems,
+            stm32cubeide_discovery,
+            choices,
+            build_evidence_path,
+        )
+    if build_system in {"CSHARP", "JAVA"}:
+        pass
+    elif build_system == "STM32CUBEIDE":
+        result = pipeline_registry.load_pipeline("STM32CUBEIDE").run(
+            job,
+            discovery,
+            stm32cubeide_discovery,
+            choices,
+            stages,
+            args,
+            ensure_authentication=ensure_authentication,
+        )
+    elif build_system == "VISUAL_STUDIO":
+        result = pipeline_registry.load_pipeline("VISUAL_STUDIO").run(
+            job,
+            discovery,
+            choices,
+            stages,
+            args.execute,
+            args.allow_agent_start,
+            args.vs_real_tool,
+            build_evidence,
+            args.artifact,
+            args.parallel,
+            ensure_authentication=ensure_authentication,
+        )
+    elif build_system in {"CMAKE", "MAKE"}:
+        result = pipeline_registry.load_pipeline(build_system).run(
+            job, discovery, build_system, choices, stages, args,
+            build_evidence=build_evidence, ensure_authentication=ensure_authentication,
+        )
+    else:
+        raise WorkflowWaiting(
+            "ADAPTER_NOT_IMPLEMENTED",
+            f"The deterministic {build_system} adapter is not implemented",
+            {"discoveredBuildSystems": discovery["data"]["candidateBuildSystems"]},
+            decision_owner="MODEL",
+            purpose="BUILD_ENVIRONMENT",
+            evidence=discovery["data"]["candidateBuildSystems"],
+        )
+    return result
+
+
+
+def _publish_manual_setup(job, stages, args, result):
+    require_execution(args.execute)
+    manual_coverage = result.pop("_manualCoverage", None)
+    if not isinstance(manual_coverage, dict):
+        raise errors.ExecutorError(
+            "PERSISTENT_SETUP_EVIDENCE_MISSING",
+            "The verified coverage pipeline did not expose a reusable manual build recipe",
+        )
+    verify_applied = manual_coverage.pop("verifyApplied", None)
+    result["buildStatus"] = "SUCCEEDED"
+    result["successCriterion"] = "BUILD_EXIT_CODE"
     try:
-        # 2. Create or resume the durable job state.
-        if args.job_context:
-            job = jobs.load_job_context(args.job_context)
-            previous_state_path = Path(job["jobDirectory"]) / "workflow-state.json"
-            if previous_state_path.is_file():
-                previous_state = fileio.load_json(previous_state_path)
-                if previous_state.get("jobId") != job["jobId"]:
-                    raise errors.ExecutorError("WORKFLOW_STATE_JOB_MISMATCH", "Previous workflow state does not match the resumed job")
-                stages.extend(list(previous_state.get("stages") or []))
-        else:
-            initialized = jobs.init_job(
-                argument(
-                    project_root=args.project_root,
-                    jobs_root=args.jobs_root,
-                    server_url=args.server_url,
-                    server_base_url=None,
-                    open_api_server_url=args.open_api_server_url,
-                    insecure_skip_tls_verify=args.insecure_skip_tls_verify,
-                    token_env="COVER_ACCESS_KEY",
-                )
-            )
-            job = initialized["data"]
-            record(job, stages, 0, "init-job", initialized)
-        if (
-            args.job_context
-            and args.open_api_server_url is not None
-            and str(args.open_api_server_url).strip() != ""
-            and servers.open_api_server_origin(args.open_api_server_url) != job.get("serverOrigin")
-        ):
-            raise errors.ExecutorError(
-                "OPEN_API_SERVER_URL_CHANGE_REQUIRES_NEW_JOB",
-                "Create a new COVER job to change the Open API main web server URL",
-            )
-        if (
-            args.job_context
-            and args.insecure_skip_tls_verify is not None
-            and args.insecure_skip_tls_verify != (job.get("insecureSkipTlsVerify") is True)
-        ):
-            raise errors.ExecutorError(
-                "TLS_POLICY_CHANGE_REQUIRES_NEW_JOB",
-                "Create a new COVER job to change TLS verification; an existing protected job cannot change policy in place",
-            )
-        envelopes.CURRENT_JOB_ID = job["jobId"]
-        state_store.begin_invocation(job, invocation_started_at, invocation_started)
-        suspended_setup = persistent_setup.suspend(job["projectRoot"]) if args.execute else None
-        if suspended_setup is not None:
-            record(
-                job,
-                stages,
-                0,
-                "suspend-persistent-coverage-setup",
-                envelopes.envelope(
-                    "SUSPENDING_PERSISTENT_COVERAGE_SETUP",
-                    "SUCCEEDED",
-                    {"path": str(persistent_setup.state_path(job["projectRoot"])), "state": "SUSPENDED"},
-                ),
-            )
-        authentication_ready = False
-
-        def ensure_authentication() -> None:
-            """Delay credentials until the first COVER server operation."""
-            nonlocal authentication_ready
-            if authentication_ready:
-                return
-            if args.prompt_credentials:
-                prompt_start = time.monotonic()
-                try:
-                    prompt_credentials(args.require_public)
-                finally:
-                    state_store.record_input_wait(job, round((time.monotonic() - prompt_start) * 1000))
-            auth_started_at, auth_start = fileio.utc_now(), time.monotonic()
-            try:
-                result = jobs.auth_preflight(
-                    argument(
-                        job_context=str(Path(job["jobDirectory"]) / "job.json"),
-                        require_public=args.require_public,
-                    )
-                )
-            except errors.ExecutorError as exc:
-                if exc.code != "AUTHENTICATION_INPUT_REQUIRED":
-                    raise
-                raise WorkflowWaiting(
-                    exc.code,
-                    "COVER 서버 작업을 계속하려면 Access Key를 채팅으로 입력해 주세요. 입력값은 현재 작업 메모리에만 유지합니다.",
-                    {"coverAccessKey": "ACCESS_KEY"},
-                    decision_owner="USER",
-                    purpose="CUSTOMER_CONFIGURATION",
-                    evidence=exc.evidence,
-                ) from exc
-            result["timing"] = {"startedAt": auth_started_at, "finishedAt": fileio.utc_now(),
-                                "durationMs": round((time.monotonic() - auth_start) * 1000), "measurement": "ACTION"}
-            record(job, stages, 8, "auth-preflight", result)
-            authentication_ready = True
-            open_api_credentials.remember(job)
-
-        if job is not None:
-            choices, resolution = load_resumable_decision(args.decision, job)
-            args.artifact = apply_expected_artifact_decision(job, choices, args.artifact)
-            # 3. Reuse a verified environment profile, or discover from the project once.
-            index_path = Path(job["directories"]["temporary"]) / "project-index.json"
-            managed_path = Path(job["directories"]["temporary"]) / "managed-project-evidence.json"
-            profile_request = environment_profile.request_signature(args)
-            cached_profile, cache_reason = (None, "DISABLED_BY_REQUEST") if args.no_environment_profile else environment_profile.load(
-                job["projectRoot"],
-                choices,
-                request=profile_request,
-                job_id=job["jobId"],
-            )
-
-            if cached_profile is not None:
-                choices = {**cached_profile["choices"], **choices}
-                index = cached_profile["projectIndex"]
-                managed_evidence = cached_profile["managedEvidence"]
-                discovery = envelopes.envelope(
-                    "DISCOVERING_PROJECT",
-                    "SUCCEEDED",
-                    cached_profile["discoveryData"],
-                )
-                stm32cubeide_discovery = cached_profile["stm32CubeIDEDiscovery"]
-                write_json(index_path, index)
-                write_json(managed_path, managed_evidence)
-                record(
-                    job,
-                    stages,
-                    1,
-                    "reuse-environment-profile",
-                    envelopes.envelope(
-                        "REUSING_BUILD_ENVIRONMENT",
-                        "SUCCEEDED",
-                        {
-                            "path": str(environment_profile.path(job["projectRoot"])),
-                            "sourceJobId": cached_profile["sourceJobId"],
-                            "reason": cache_reason,
-                        },
-                    ),
-                )
-            else:
-                record(
-                    job,
-                    stages,
-                    1,
-                    "reuse-environment-profile",
-                    envelopes.envelope(
-                        "REUSING_BUILD_ENVIRONMENT",
-                        "SKIPPED",
-                        {"reason": cache_reason},
-                    ),
-                )
-
-                def create_project_index() -> dict[str, Any]:
-                    value, reused = project_index.load_or_build(job["projectRoot"], index_path)
-                    if not reused:
-                        write_json(index_path, value)
-                    return envelopes.envelope(
-                        "INDEXING_PROJECT",
-                        "SUCCEEDED",
-                        {"path": str(index_path), "schema": value["schema"], "scannedFileCount": value["scannedFileCount"], "reusedIndex": reused},
-                    )
-
-                record(job, stages, 2, "index-project", create_project_index())
-                index = fileio.load_json(index_path)
-                index_fingerprint = project_index.input_fingerprint(index)
-
-                def collect_managed() -> dict[str, Any]:
-                    value = project_discovery.detect_managed(Path(job["projectRoot"]), index)
-                    write_json(managed_path, value)
-                    return envelopes.envelope(
-                        "DETECTING_MANAGED_PROJECT",
-                        "SUCCEEDED",
-                        {"path": str(managed_path), "routing": value["routing"]},
-                    )
-
-                state_store.run_checkpointed(
-                    job, stages, record, 2, "detect-managed-project", {"projectIndexFingerprint": index_fingerprint}, collect_managed
-                )
-                managed_evidence = fileio.load_json(managed_path)
-
-            route = str(managed_evidence.get("routing") or "NOT_MANAGED")
-            if route in {
-                "WAITING_MODEL_MIXED_MANAGED",
-                "WAITING_MODEL_MIXED_DOTNET_NATIVE",
-                "WAITING_MODEL_MIXED_BUILD_GRAPH",
-            }:
-                selected_route = choices.get("languageRoute")
-                candidates = []
-                if managed_evidence.get("csharp", {}).get("detected"):
-                    candidates.append("CSHARP")
-                if managed_evidence.get("java", {}).get("detected"):
-                    candidates.append("JAVA")
-                if route in {"WAITING_MODEL_MIXED_DOTNET_NATIVE", "WAITING_MODEL_MIXED_BUILD_GRAPH"} and (
-                    managed_evidence.get("csharp", {}).get("nativeProjectFiles")
-                    or managed_evidence.get("csharp", {}).get("nativeBuildEntries")
-                ):
-                    candidates.append("NATIVE")
-                if selected_route in candidates:
-                    route = str(selected_route)
-
-            if cached_profile is not None:
-                pass
-            elif route in {"CSHARP", "JAVA"}:
-                languages = {
-                    "CSHARP": int(managed_evidence.get("csharp", {}).get("sourceCount") or 0),
-                    "JAVA": int(managed_evidence.get("java", {}).get("sourceCount") or 0),
-                }
-                managed_systems = (
-                    managed_evidence["csharp"].get("buildSystemCandidates")
-                    if route == "CSHARP"
-                    else managed_evidence["java"].get("buildSystemCandidates")
-                )
-                discovery = envelopes.envelope(
-                    "DISCOVERING_PROJECT",
-                    "SUCCEEDED",
-                    {
-                        "projectRoot": job["projectRoot"],
-                        "projectLanguages": languages,
-                        "candidateBuildSystems": list(managed_systems or []),
-                        "unsupportedBuildSystems": [],
-                        "files": [],
-                    },
-                )
-                stm32cubeide_discovery = {"schema": "cover-stm32cubeide-discovery/v1", "status": "NOT_DETECTED", "projects": []}
-            else:
-                discovery = state_store.run_checkpointed(
-                    job,
-                    stages,
-                    record,
-                    2,
-                    "discover-project",
-                    {"projectIndexFingerprint": index_fingerprint},
-                    lambda: project_files.discover_project(argument(root=job["projectRoot"], project_index=index)),
-                )
-                stm32_envelope = state_store.run_checkpointed(
-                    job,
-                    stages,
-                    record,
-                    2,
-                    "detect-stm32cubeide",
-                    {"projectIndexFingerprint": index_fingerprint},
-                    lambda: envelopes.envelope(
-                        "DETECTING_STM32CUBEIDE",
-                        "SUCCEEDED",
-                        project_discovery.detect_stm32cubeide(job["projectRoot"], index),
-                    ),
-                )
-                stm32cubeide_discovery = stm32_envelope["data"]
-
-            environment_context = {
-                "choices": choices,
-                "request": profile_request,
-                "projectIndex": index,
-                "managedEvidence": managed_evidence,
-                "discovery": discovery,
-                "stm32CubeIDEDiscovery": stm32cubeide_discovery,
-            }
-
-            # 4. Resolve every pre-build choice before executing the original build.
-            unresolved = selection.collect_prebuild_decision_bundle(
-                discovery if route not in {"CSHARP", "JAVA"} else None,
-                stm32cubeide_discovery,
-                managed_evidence,
-                choices,
-            )
-            if unresolved:
-                raise WorkflowWaiting(
-                    "PREBUILD_DECISION_BUNDLE_REQUIRED",
-                    "원본 빌드를 시작하기 전에 확인 가능한 선택 항목을 한 번에 결정해야 합니다.",
-                    unresolved,
-                    decision_owner="MODEL",
-                    purpose="BUILD_ENVIRONMENT",
-                    evidence=[str(index_path), str(managed_path)],
-                )
-            build_evidence_path = Path(job["directories"]["temporary"]) / "build-evidence.json"
-            build_evidence = state_store.run_checkpointed(job, stages, record, 2, "collect-build-evidence-data",
-                {"projectInput": project_index.input_fingerprint(index), "route": route},
-                lambda: envelopes.envelope("COLLECTING_BUILD_EVIDENCE", "SUCCEEDED",
-                                          build_plan.collect_build_evidence(job, discovery, stm32cubeide_discovery)))["data"]
-            write_json(build_evidence_path, build_evidence)
-            record(
-                job,
-                stages,
-                2,
-                "collect-build-evidence",
-                envelopes.envelope(
-                    "COLLECTING_BUILD_EVIDENCE",
-                    "SUCCEEDED",
-                    {"path": str(build_evidence_path), "schema": build_plan.BUILD_EVIDENCE_SCHEMA},
-                ),
-            )
-            # 5. Freeze the pre-build survey, then dispatch one environment Pipeline.
-            environment_survey_path = job_work_path(job, "temporary", survey.SURVEY_FILENAME)
-            def collect_survey() -> dict[str, Any]:
-                environment_survey_value = survey.create_pre_build_survey(
-                    job, discovery, stm32cubeide_discovery, build_evidence, choices)
-                survey.write_survey(environment_survey_path, environment_survey_value)
-                return envelopes.envelope("COLLECTING_COVER_ENVIRONMENT_SURVEY", "SUCCEEDED",
-                    {"path": str(environment_survey_path), "phase": environment_survey_value["phase"]})
-            state_store.run_checkpointed(job, stages, record, 2, "collect-cover-environment-survey",
-                {"projectInput": project_index.input_fingerprint(index), "route": route,
-                 "originalBuildPlan": choices.get("originalBuildPlan"),
-                 "environment": state_store.input_digest({key: os.environ.get(key) for key in ("PATH", "CODESCROLL_TM_INSTALL_PATH")})},
-                collect_survey, validate=lambda _: environment_survey_path.is_file())
-            if route == "CSHARP":
-                result = pipeline_registry.load_pipeline("CSHARP").run(
-                    job, managed_evidence, choices, stages, args, record, ensure_authentication,
-                    finalize_environment_survey_plan,
-                    write_original_build_evidence,
-                )
-                supported_build_systems = []
-            elif route == "JAVA":
-                result = pipeline_registry.load_pipeline("JAVA").run(
-                    job, managed_evidence, choices, stages, args, record, ensure_authentication,
-                    finalize_environment_survey_plan,
-                    write_original_build_evidence,
-                )
-                supported_build_systems = []
-            else:
-                supported_build_systems = discovery["data"]["candidateBuildSystems"]
-            if route in {"CSHARP", "JAVA"}:
-                build_system = route
-            elif (
-                stm32cubeide_discovery.get("status") == "NOT_DETECTED"
-                and not supported_build_systems
-                and "NINJA" in discovery["data"].get("unsupportedBuildSystems", [])
-            ):
-                raise WorkflowWaiting(
-                    "NINJA_BUILD_UNSUPPORTED",
-                    "A direct Ninja build has no supported owning entry; provide its CMake source/preset/cache or a direct Make entry",
-                    {"supportedBuildSystem": ["CMAKE", "MAKE"]},
-                    decision_owner="USER",
-                    purpose="CUSTOMER_CONFIGURATION",
-                    evidence=discovery["data"].get("unsupportedBuildFiles", []),
-                )
-            else:
-                build_system = select_build_system(
-                    supported_build_systems,
-                    stm32cubeide_discovery,
-                    choices,
-                    build_evidence_path,
-                )
-            if build_system in {"CSHARP", "JAVA"}:
-                pass
-            elif build_system == "STM32CUBEIDE":
-                result = run_stm32cubeide(
-                    job,
-                    discovery,
-                    stm32cubeide_discovery,
-                    choices,
-                    stages,
-                    args,
-                    ensure_authentication=ensure_authentication,
-                )
-            elif build_system == "VISUAL_STUDIO":
-                result = run_visual_studio(
-                    job,
-                    discovery,
-                    choices,
-                    stages,
-                    args.execute,
-                    args.allow_agent_start,
-                    args.vs_real_tool,
-                    build_evidence,
-                    args.artifact,
-                    args.parallel,
-                    ensure_authentication=ensure_authentication,
-                )
-            elif build_system in {"CMAKE", "MAKE"}:
-                result = run_gcc(
-                    job, discovery, build_system, choices, stages, args,
-                    build_evidence=build_evidence, ensure_authentication=ensure_authentication,
-                )
-            else:
-                raise WorkflowWaiting(
-                    "ADAPTER_NOT_IMPLEMENTED",
-                    f"The deterministic {build_system} adapter is not implemented",
-                    {"discoveredBuildSystems": discovery["data"]["candidateBuildSystems"]},
-                    decision_owner="MODEL",
-                    purpose="BUILD_ENVIRONMENT",
-                    evidence=discovery["data"]["candidateBuildSystems"],
-                )
-        # 6. Promote the exact verified coverage invocation out of the
-        # disposable job directory so the customer can rerun it manually.
-        # Pipelines stop planning-only runs before building. Keep the boundary
-        # explicit here too: a future pipeline must not publish an unbuilt plan.
-        require_execution(args.execute)
-        manual_coverage = result.pop("_manualCoverage", None)
-        if not isinstance(manual_coverage, dict):
-            raise errors.ExecutorError(
-                "PERSISTENT_SETUP_EVIDENCE_MISSING",
-                "The verified coverage pipeline did not expose a reusable manual build recipe",
-            )
-        verify_applied = manual_coverage.pop("verifyApplied", None)
         applied_path = persistent_setup.publish(
             job,
             build_system=manual_coverage["buildSystem"],
@@ -604,110 +508,272 @@ def run(
             "path": str(applied_path),
             "entrypoints": applied_state["entrypoints"],
         }
+    except (errors.ExecutorError, OSError) as setup_error:
+        result["persistentSetup"] = {"state": "FAILED", "errorCode": getattr(setup_error, "code", "PERSISTENT_SETUP_IO_FAILED"), "message": str(setup_error)}
 
-        # 7. Persist one final result after Pipeline verification succeeds.
-        final = {
-            "schema": WORKFLOW_SCHEMA,
-            "jobId": job["jobId"],
-            "status": "SUCCEEDED",
-            "state": "COVERAGE_BUILD_VERIFIED",
-            "stages": stages,
-            "result": result,
-        }
-        if environment_context is not None:
-            try:
-                profile_path = environment_profile.publish(
-                    job,
-                    choices=environment_context["choices"],
-                    request=environment_context["request"],
-                    project_index_value=environment_context["projectIndex"],
-                    managed_evidence=environment_context["managedEvidence"],
-                    discovery=environment_context["discovery"],
-                    stm32cubeide_discovery=environment_context["stm32CubeIDEDiscovery"],
+
+
+def _finish_success(job, stages, result, environment_context):
+    final = {
+        "schema": WORKFLOW_SCHEMA,
+        "jobId": job["jobId"],
+        "status": "SUCCEEDED",
+        "state": "COVERAGE_BUILD_SUCCEEDED",
+        "stages": stages,
+        "result": result,
+    }
+    if environment_context is not None:
+        try:
+            profile_path = environment_profile.publish(
+                job,
+                choices=environment_context["choices"],
+                request=environment_context["request"],
+                project_index_value=environment_context["projectIndex"],
+                managed_evidence=environment_context["managedEvidence"],
+                discovery=environment_context["discovery"],
+                stm32cubeide_discovery=environment_context["stm32CubeIDEDiscovery"],
+            )
+            record(
+                job,
+                stages,
+                31,
+                "publish-environment-profile",
+                envelopes.envelope(
+                    "PUBLISHING_BUILD_ENVIRONMENT",
+                    "SUCCEEDED",
+                    {"path": str(profile_path), "sourceJobId": job["jobId"]},
+                ),
+            )
+        except (OSError, ValueError, errors.ExecutorError) as exc:
+            record(
+                job,
+                stages,
+                31,
+                "publish-environment-profile",
+                envelopes.envelope(
+                    "PUBLISHING_BUILD_ENVIRONMENT",
+                    "SKIPPED",
+                    {"reason": f"{type(exc).__name__}: {exc}"},
+                ),
+            )
+        final["stages"] = stages
+    build_reporting.attach(job, final)
+    write_json(Path(job["jobDirectory"]) / "workflow-state.json", final)
+    return final
+
+
+def run(
+    argv: list[str] | None = None,
+) -> int:
+    invocation_started_at, invocation_started = fileio.utc_now(), time.monotonic()
+
+    # 1. Parse a new job, resume request, or decision command.
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args[:1] == ["decision"]:
+        return decision_file.decision_main(raw_args[1:])
+    args = _parse_arguments(raw_args)
+    stages: list[dict[str, Any]] = []
+    job: dict[str, Any] | None = None
+    resolution: dict[str, Any] = {}
+    environment_context: dict[str, Any] | None = None
+    suspended_setup: dict[str, Any] | None = None
+    with ExitStack() as invocation_locks:
+        try:
+            # 2. Create or resume the durable job state.
+            if args.job_context:
+                candidate_job = jobs.load_job_context(args.job_context)
+                invocation_locks.enter_context(project_lock.acquire(candidate_job["projectRoot"]))
+                job = candidate_job
+                previous_state_path = Path(job["jobDirectory"]) / "workflow-state.json"
+                if previous_state_path.is_file():
+                    previous_state = fileio.load_json(previous_state_path)
+                    if previous_state.get("jobId") != job["jobId"]:
+                        raise errors.ExecutorError("WORKFLOW_STATE_JOB_MISMATCH", "Previous workflow state does not match the resumed job")
+                    stages.extend(list(previous_state.get("stages") or []))
+            else:
+                invocation_locks.enter_context(project_lock.acquire(args.project_root))
+                initialized = jobs.init_job(
+                    argument(
+                        project_root=args.project_root,
+                        jobs_root=args.jobs_root,
+                        server_url=args.server_url,
+                        server_base_url=None,
+                        open_api_server_url=args.open_api_server_url,
+                        insecure_skip_tls_verify=args.insecure_skip_tls_verify,
+                        token_env="COVER_ACCESS_KEY",
+                    )
                 )
+                job = initialized["data"]
+                record(job, stages, 0, "init-job", initialized)
+            if (
+                args.job_context
+                and args.open_api_server_url is not None
+                and str(args.open_api_server_url).strip() != ""
+                and servers.open_api_server_origin(args.open_api_server_url) != job.get("serverOrigin")
+            ):
+                raise errors.ExecutorError(
+                    "OPEN_API_SERVER_URL_CHANGE_REQUIRES_NEW_JOB",
+                    "Create a new COVER job to change the Open API main web server URL",
+                )
+            if (
+                args.job_context
+                and args.insecure_skip_tls_verify is not None
+                and args.insecure_skip_tls_verify != (job.get("insecureSkipTlsVerify") is True)
+            ):
+                raise errors.ExecutorError(
+                    "TLS_POLICY_CHANGE_REQUIRES_NEW_JOB",
+                    "Create a new COVER job to change TLS verification; an existing protected job cannot change policy in place",
+                )
+            recovered_archive = archive_policy.restore(job)
+            if recovered_archive and recovered_archive.get("restoreRequired"):
+                raise errors.ExecutorError("ARCHIVE_RESTORE_REQUIRED", "Restore the previous Agent configuration before resuming", [recovered_archive])
+            envelopes.CURRENT_JOB_ID = job["jobId"]
+            state_store.begin_invocation(job, invocation_started_at, invocation_started)
+            suspended_setup = persistent_setup.suspend(job["projectRoot"]) if args.execute else None
+            if suspended_setup is not None:
                 record(
                     job,
                     stages,
-                    31,
-                    "publish-environment-profile",
+                    0,
+                    "suspend-persistent-coverage-setup",
                     envelopes.envelope(
-                        "PUBLISHING_BUILD_ENVIRONMENT",
+                        "SUSPENDING_PERSISTENT_COVERAGE_SETUP",
                         "SUCCEEDED",
-                        {"path": str(profile_path), "sourceJobId": job["jobId"]},
+                        {"path": str(persistent_setup.state_path(job["projectRoot"])), "state": "SUSPENDED"},
                     ),
                 )
-            except (OSError, ValueError, errors.ExecutorError) as exc:
-                record(
-                    job,
-                    stages,
-                    31,
-                    "publish-environment-profile",
-                    envelopes.envelope(
-                        "PUBLISHING_BUILD_ENVIRONMENT",
-                        "SKIPPED",
-                        {"reason": f"{type(exc).__name__}: {exc}"},
-                    ),
-                )
-            final["stages"] = stages
-        build_reporting.attach(job, final)
-        write_json(Path(job["jobDirectory"]) / "workflow-state.json", final)
-    except WorkflowWaiting as exc:
-        assert job is not None
-        persistent_setup.resume(job["projectRoot"], suspended_setup)
-        final = waiting(job, stages, apply_model_fallback(exc, resolution))
-    except errors.ExecutorError as exc:
-        if job is not None:
+            authentication_ready = False
+
+            def ensure_authentication() -> None:
+                """Delay credentials until the first COVER server operation."""
+                nonlocal authentication_ready
+                if authentication_ready:
+                    return
+                if args.prompt_credentials:
+                    prompt_start = time.monotonic()
+                    try:
+                        prompt_credentials(args.require_public, job["serverOrigin"])
+                    finally:
+                        state_store.record_input_wait(job, round((time.monotonic() - prompt_start) * 1000))
+                auth_started_at, auth_start = fileio.utc_now(), time.monotonic()
+                try:
+                    result = jobs.auth_preflight(
+                        argument(
+                            job_context=str(Path(job["jobDirectory"]) / "job.json"),
+                            require_public=args.require_public,
+                        )
+                    )
+                except errors.ExecutorError as exc:
+                    if exc.code != "AUTHENTICATION_INPUT_REQUIRED":
+                        raise
+                    raise WorkflowWaiting(
+                        exc.code,
+                        "COVER 서버 작업을 계속하려면 Access Key를 채팅으로 입력해 주세요. 입력값은 현재 작업 메모리에만 유지합니다.",
+                        {"coverAccessKey": "ACCESS_KEY"},
+                        decision_owner="USER",
+                        purpose="CUSTOMER_CONFIGURATION",
+                        evidence=exc.evidence,
+                    ) from exc
+                result["timing"] = {"startedAt": auth_started_at, "finishedAt": fileio.utc_now(),
+                                    "durationMs": round((time.monotonic() - auth_start) * 1000), "measurement": "ACTION"}
+                record(job, stages, 8, "auth-preflight", result)
+                authentication_ready = True
+                open_api_credentials.remember(job)
+
+            if job is not None:
+                choices, resolution = load_resumable_decision(args.decision, job)
+                args.artifact = apply_expected_artifact_decision(job, choices, args.artifact)
+                # 3. Reuse a verified environment profile, or discover from the project once.
+                choices, route, index, index_path, managed_path, managed_evidence, discovery, stm32cubeide_discovery, environment_context = _discover_environment(job, stages, args, choices)
+                # 4. Resolve every pre-build choice before executing the original build.
+                build_evidence, build_evidence_path = _prepare_build_evidence(job, stages, choices, route, index, index_path, managed_path, managed_evidence, discovery, stm32cubeide_discovery)
+                result = _run_pipeline(job, stages, args, choices, route, managed_evidence, discovery, stm32cubeide_discovery, build_evidence, build_evidence_path, ensure_authentication)
+            # 6. Promote the exact verified coverage invocation out of the
+            # disposable job directory so the customer can rerun it manually.
+            # Pipelines stop planning-only runs before building. Keep the boundary
+            # explicit here too: a future pipeline must not publish an unbuilt plan.
+            _publish_manual_setup(job, stages, args, result)
+            # 7. Persist one final result after Pipeline verification succeeds.
+            final = _finish_success(job, stages, result, environment_context)
+        except project_lock.ProjectBusy as exc:
+            # A rejected duplicate must not overwrite the active job, timing, output,
+            # decisions, or persistent settings (even when --job-context is identical).
+            print(json.dumps({
+                "schema": WORKFLOW_SCHEMA,
+                "status": "WAITING_PROJECT",
+                "state": "PROJECT_BUILD_ALREADY_RUNNING",
+                "reason": {"code": exc.code, "message": str(exc), "evidence": exc.evidence},
+            }, ensure_ascii=False, indent=2))
+            return 4
+        except WorkflowWaiting as exc:
+            assert job is not None
             persistent_setup.resume(job["projectRoot"], suspended_setup)
-        error = {"code": exc.code, "message": str(exc), "evidence": exc.evidence}
-        if job is None and exc.code == "OPEN_API_MAIN_WEB_SERVER_URL_REQUIRED":
-            final = {
-                "schema": WORKFLOW_SCHEMA,
-                "status": "WAITING_USER",
-                "state": "WAITING_USER_INPUT",
-                "decisionOwner": "USER",
-                "purpose": "CUSTOMER_CONFIGURATION",
-                "reason": error,
-                "stages": stages,
+            final = waiting(job, stages, apply_model_fallback(exc, resolution))
+        except errors.ExecutorError as exc:
+            if job is not None:
+                persistent_setup.resume(job["projectRoot"], suspended_setup)
+            error = {"code": exc.code, "message": str(exc), "evidence": exc.evidence}
+            if job is None and exc.code == "OPEN_API_MAIN_WEB_SERVER_URL_REQUIRED":
+                final = {
+                    "schema": WORKFLOW_SCHEMA,
+                    "status": "WAITING_USER",
+                    "state": "WAITING_USER_INPUT",
+                    "decisionOwner": "USER",
+                    "purpose": "CUSTOMER_CONFIGURATION",
+                    "reason": error,
+                    "stages": stages,
+                }
+            elif job is None:
+                final = {"schema": WORKFLOW_SCHEMA, "status": "FAILED", "error": error, "stages": stages}
+            else:
+                final = {
+                    "schema": WORKFLOW_SCHEMA,
+                    "jobId": job["jobId"],
+                    "status": "FAILED",
+                    "state": "FAILED",
+                    "error": error,
+                    "stages": stages,
+                }
+                build_reporting.attach(job, final)
+                write_json(Path(job["jobDirectory"]) / "workflow-state.json", final)
+        except Exception as exc:
+            if job is not None:
+                persistent_setup.resume(job["projectRoot"], suspended_setup)
+            error = {
+                "code": "UNEXPECTED_WORKFLOW_ERROR",
+                "message": f"{type(exc).__name__}: {exc}",
+                "evidence": [],
             }
-        elif job is None:
-            final = {"schema": WORKFLOW_SCHEMA, "status": "FAILED", "error": error, "stages": stages}
-        else:
-            final = {
-                "schema": WORKFLOW_SCHEMA,
-                "jobId": job["jobId"],
-                "status": "FAILED",
-                "state": "FAILED",
-                "error": error,
-                "stages": stages,
-            }
+            if job is None:
+                final = {"schema": WORKFLOW_SCHEMA, "status": "FAILED", "error": error, "stages": stages}
+            else:
+                final = {
+                    "schema": WORKFLOW_SCHEMA,
+                    "jobId": job["jobId"],
+                    "status": "FAILED",
+                    "state": "FAILED",
+                    "error": error,
+                    "stages": stages,
+                }
+                build_reporting.attach(job, final)
+                write_json(Path(job["jobDirectory"]) / "workflow-state.json", final)
+        finally:
+            if job is not None:
+                try:
+                    restored_archive = archive_policy.restore(job)
+                    if restored_archive:
+                        stages.append(envelopes.envelope("RESTORING_ARCHIVE_POLICY",
+                            "FAILED" if restored_archive.get("restoreRequired") else "SUCCEEDED",
+                            restored_archive.get("restoration") or {"status": "NOT_REQUIRED"}))
+                except Exception as restore_error:
+                    # Preserve the original build outcome even if the recovery journal cannot be saved.
+                    stages.append(envelopes.envelope("RESTORING_ARCHIVE_POLICY", "FAILED",
+                        {"message": str(restore_error), "recoveryRequired": True}))
+        if job is not None:
+            state_store.end_invocation(job, final["status"])
             build_reporting.attach(job, final)
             write_json(Path(job["jobDirectory"]) / "workflow-state.json", final)
-    except Exception as exc:
-        if job is not None:
-            persistent_setup.resume(job["projectRoot"], suspended_setup)
-        error = {
-            "code": "UNEXPECTED_WORKFLOW_ERROR",
-            "message": f"{type(exc).__name__}: {exc}",
-            "evidence": [],
-        }
-        if job is None:
-            final = {"schema": WORKFLOW_SCHEMA, "status": "FAILED", "error": error, "stages": stages}
-        else:
-            final = {
-                "schema": WORKFLOW_SCHEMA,
-                "jobId": job["jobId"],
-                "status": "FAILED",
-                "state": "FAILED",
-                "error": error,
-                "stages": stages,
-            }
-            build_reporting.attach(job, final)
-            write_json(Path(job["jobDirectory"]) / "workflow-state.json", final)
-    if job is not None:
-        state_store.end_invocation(job, final["status"])
-        build_reporting.attach(job, final)
-        write_json(Path(job["jobDirectory"]) / "workflow-state.json", final)
-    if args.output:
-        write_json(canonical(args.output, False), final)
-    print(json.dumps(final, ensure_ascii=False, indent=2))
-    return {"SUCCEEDED": 0, "WAITING_MODEL": 2, "WAITING_USER": 3}.get(final["status"], 1)
+        if args.output:
+            write_json(canonical(args.output, False), final)
+        print(json.dumps(final, ensure_ascii=False, indent=2))
+        return {"SUCCEEDED": 0, "WAITING_MODEL": 2, "WAITING_USER": 3}.get(final["status"], 1)

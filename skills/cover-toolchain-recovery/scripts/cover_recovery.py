@@ -23,13 +23,6 @@ def _server_options(parser, *, required=True):
     parser.set_defaults(insecure_tls=True)
 
 
-def _runtime_options(parser):
-    parser.add_argument("--pa-root", type=Path,
-                        help="PA 경로 변경: PA 폴더 또는 단독 tmpa 파일. 기본은 스킬 루트의 assets/tmpa 폴더; verify는 저장된 경로 사용")
-    parser.add_argument("--pa-executable", type=Path,
-                        help="PA 실행 파일 직접 지정. --pa-root와 함께 쓰면 해당 폴더 기준 상대 경로도 가능")
-
-
 def _discovery_options(parser):
     parser.add_argument("--project-root", type=Path, help="오류 명령을 실행한 빌드 작업 폴더")
     parser.add_argument("--agent-root", type=Path, help="환경변수 대신 사용할 Agent 설치 폴더")
@@ -50,13 +43,12 @@ def _context_options(args):
 
 
 def make_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="COVER 분석 오류 복구: 원본 보존, 로컬 PA, 단계별 검증")
+    parser = argparse.ArgumentParser(description="COVER 분석 오류 복구: 원본 보존, 서버 PA, 단계별 검증")
     subs = parser.add_subparsers(dest="command", required=True)
     start = subs.add_parser("start", help="오류 ZIP/폴더를 복사하고 증거와 초기 상태 기록")
     start.add_argument("--artifacts", type=Path, help="생략하면 빌드 문맥에서 오류 자료 자동 탐색")
     start.add_argument("--source", required=True)
     start.add_argument("--run-dir", required=True, type=Path)
-    _runtime_options(start)
     _server_options(start, required=False)
     _discovery_options(start)
     discovery = subs.add_parser("discover", help="빌드 환경·서버 설정·오류 자료를 읽기 전용으로 탐색")
@@ -65,20 +57,19 @@ def make_parser() -> argparse.ArgumentParser:
     _discovery_options(discovery)
     collect = subs.add_parser("collect", help="Open API로 최신 PA 오류 자료를 다운로드하고 시작")
     _server_options(collect, required=False)
-    _runtime_options(collect)
     _discovery_options(collect)
     collect.add_argument("--source", required=True)
     collect.add_argument("--archive", required=True, type=Path, help="새 오류 ZIP 저장 경로")
     collect.add_argument("--run-dir", required=True, type=Path)
-    verify = subs.add_parser("verify", help="근거가 있는 후보를 복사본에서 PA 검증")
+    verify = subs.add_parser("verify", help="근거가 있는 후보를 COVER 서버에서 PA 검증")
     verify.add_argument("--case", required=True, type=Path)
     verify.add_argument("--candidate", required=True, type=Path)
-    verify.add_argument("--timeout", type=int, default=600)
-    _runtime_options(verify)
+    verify.add_argument("--timeout", type=int, default=60, help="이번 상태 조회 대기 시간(1~60초); 서버 실행은 계속됨")
+    verify.add_argument("--platform", choices=("win", "linux"), help="빌드 PC의 OS; 생략하면 서버가 이슈 경로로 판단")
+    _server_options(verify, required=False)
+    verify.set_defaults(access_key_env=None, insecure_tls=None)
     inspect = subs.add_parser("inspect", help="실행 기록 읽기")
     inspect.add_argument("--case", required=True, type=Path)
-    runtime = subs.add_parser("runtime", help="스킬에 동봉된 tmpa 또는 명시한 PA 확인; 실행하지 않음")
-    _runtime_options(runtime)
     plan = subs.add_parser("publish-plan", help="서버 변경 계획 생성; 서버 읽기만 수행")
     _server_options(plan)
     plan.add_argument("--case", required=True, type=Path)
@@ -117,16 +108,19 @@ def _collect_case(args, context: dict, archive: Path) -> dict:
     args.server = server
     with _client(args) as client:
         data = client.download_issue_archive(context["source_path"], hardware)
+        issue_metadata = client.last_issue_metadata
     archive.parent.mkdir(parents=True, exist_ok=True)
     with archive.open("xb") as stream:
         stream.write(data)
-    result = begin_case(archive, args.run_dir, context["source_path"], args.pa_root, args.pa_executable)
+    result = begin_case(archive, args.run_dir, context["source_path"])
     result["collection"] = {
         "server_url": server, "hardware_id": hardware,
         "archive": str(archive), "source_path": context["source_path"],
-        "api": "open_api_v1", "endpoint": "/v1/issue/download", "issue_work_type": "PA_ERROR_RESULT",
+        "api": "open_api", "endpoint": "/v1/issue/download", "issue_work_type": "PA_ERROR_RESULT",
         "selection": "server_latest_by_mac_and_source_path",
-        "issue_metadata_available": False,
+        "issue_metadata_available": bool(issue_metadata),
+        "issue_metadata": issue_metadata,
+        "access_key_env": args.access_key_env, "insecure_tls": args.insecure_tls,
     }
     from cover_recovery.workflow import save_case
     save_case(result)
@@ -138,7 +132,7 @@ def execute(args) -> dict:
         from cover_recovery.discovery import discover_artifacts, resolve_source
         source = resolve_source(args.source, args.project_root)
         if args.artifacts:
-            return begin_case(args.artifacts, args.run_dir, source, args.pa_root, args.pa_executable)
+            return begin_case(args.artifacts, args.run_dir, source)
         if args.run_dir.exists():
             raise RecoveryError("OutputExists", "기존 실행 폴더를 덮어쓰지 않습니다.")
         discovery = discover_artifacts(args.source, **_context_options(args))
@@ -175,13 +169,22 @@ def execute(args) -> dict:
         context = discover_context(args.source, **_context_options(args))
         return _collect_case(args, context, args.archive)
     if args.command == "verify":
-        return verify_case(args.case, args.candidate, pa_root=args.pa_root,
-                           executable=args.pa_executable, timeout_seconds=args.timeout)
+        case = load_case(args.case)
+        server = case.get("collection", {}).get("server_url")
+        if not server:
+            return verify_case(args.case, args.candidate, timeout_seconds=args.timeout)
+        if args.server and args.server != server:
+            raise RecoveryError("ServerMismatch", "오류 자료를 수집한 서버와 같은 서버에서 검증해야 합니다.")
+        args.server = server
+        collection = case["collection"]
+        args.access_key_env = args.access_key_env or collection.get("access_key_env", "COVER_ACCESS_KEY")
+        if args.insecure_tls is None:
+            args.insecure_tls = collection.get("insecure_tls", True)
+        with _client(args) as client:
+            return verify_case(args.case, args.candidate, client=client,
+                               timeout_seconds=args.timeout, platform=args.platform)
     if args.command == "inspect":
         return load_case(args.case)
-    if args.command == "runtime":
-        from cover_recovery.pa import inspect_runtime
-        return inspect_runtime(args.pa_root, args.pa_executable)
     if args.command == "publish-plan":
         from cover_recovery.deployment import prepare_publish
         from cover_recovery.workflow import verified_attempt
@@ -210,14 +213,12 @@ def main() -> int:
         blocked = result.get("status") in {
             "VerificationBlocked", "RecoveryFailed", "NeedsAttention", "Timeout", "Blocked", "NeedsInput"
         }
-        if args.command == "runtime" and not result.get("available"):
-            blocked = True
         return 2 if blocked else 0
     except RecoveryError as exc:
         print(json.dumps({"status": "Blocked", "error": exc.as_dict()}, ensure_ascii=False, indent=2))
         return 2
     except (OSError, ValueError, TypeError, KeyError) as exc:
-        # Do not echo environment variables, HTTP payloads, or subprocess streams.
+        # Do not echo environment variables or HTTP payloads.
         print(json.dumps({"status": "Blocked", "error": {
             "code": type(exc).__name__, "message": "입력 또는 파일 접근을 확인하세요."
         }}, ensure_ascii=False))

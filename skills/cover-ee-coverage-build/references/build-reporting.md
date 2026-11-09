@@ -1,5 +1,10 @@
 # 빌드 기록과 채팅 보고
 
+## 빌드 결과 판정 정책
+
+커버리지 빌드는 실행 명령의 종료 코드가 0이면 성공, 0이 아니면 실패로 판정한다. 탐침 여부를 확인하기 위한 래퍼 호출·우회 로그 검사, 심볼 검사, C#/Java 처리 건수 집계와 빌드 후 산출물 갱신·경로 비교는 수행하지 않는다. 재사용 설정으로 재빌드할 때도 종료 코드로 판정한다. 설정 적용 결과는 빌드 결과와 별도로 보고하며, 설정 적용 실패로 이미 성공한 빌드 결과를 변경하지 않는다. 원본 빌드의 도구·산출물 조사, 실행 전 설정·출력 경로 검증, 백업·복구는 유지한다.
+
+
 Visual Studio, GCC/CMake, GCC/Make, STM32CubeIDE, C#, Java에서 같은 형식으로 빌드 선택과 실행 결과를 남긴다. 정보가 기존 단계 JSON에 분산되어 있더라도 작업이 끝나거나 중단될 때 공통 상태 파일인 `workflow-state.json`의 `result.buildSummary`로 모아 기록한다.
 
 별도 요약 파일을 추가하지 않으며, 사전 조사서인 `cover-environment-survey.json`을 대체하거나 사후 정보로 갱신하지 않는다.
@@ -8,7 +13,7 @@ Visual Studio, GCC/CMake, GCC/Make, STM32CubeIDE, C#, Java에서 같은 형식�
 
 - 원본 빌드 방법이 확정되면 빌드 시스템과 타깃 부분을 작성한다.
 - 실제 커버리지 명령을 실행할 때 명령과 실행 시간을 작성한다.
-- 계측 처리와 산출물을 검증한 뒤 결과를 보완한다.
+- 실제 커버리지 빌드 명령의 종료 코드와 설정 적용 결과로 보고를 보완한다.
 - 성공, 실패, 사용자 입력 대기와 관계없이 현재까지 확정된 내용을 기록한다.
 - 재개한 작업은 같은 `jobId`의 파일을 갱신하되 실제로 다시 수행하지 않은 과거 명령을 현재 실행처럼 추가하지 않는다.
 
@@ -74,6 +79,20 @@ Visual Studio, GCC/CMake, GCC/Make, STM32CubeIDE, C#, Java에서 같은 형식�
       }
     ]
   },
+  "sourceInstrumentation": {
+    "scope": "SELECTED_BUILD_TARGETS",
+    "totalSourceCount": null,
+    "successCount": null,
+    "failureCount": null,
+    "excludedCount": null,
+    "unconfirmedSourceCount": null,
+    "countUnit": "UNKNOWN | SOURCE_PROCESSING_RESULT | UNIQUE_SOURCE_PATH",
+    "failedSources": [],
+    "warning": null,
+    "completeness": "UNKNOWN",
+    "unknownReason": "<전체 대상 목록을 확인하지 못한 이유>",
+    "evidence": []
+  },
   "artifacts": [
     {
       "path": "<산출물 절대 경로>",
@@ -137,6 +156,12 @@ Visual Studio, GCC/CMake, GCC/Make, STM32CubeIDE, C#, Java에서 같은 형식�
 - 실패했다면 실행한 명령과 확인된 산출물을 삭제하지 말고 `failure.stage`, `failure.code`, 비밀값이 없는 `failure.message`를 기록한다.
 - `persistentSetup.fileChanges`에는 프로젝트·Agent에 적용한 파일을 먼저 `MODIFIED`로 기록하고, `.cover-ee/applied-state.json`, 수동 명령·entrypoint, 재사용 파일을 `CREATED_OR_UPDATED`로 기록한다. 한 파일이 여러 역할을 가지면 `purposes`와 `backupPaths`를 합치며 모든 경로는 절대 경로로 정규화한다.
 
+위 JSON은 필드 구조를 설명하는 예시다. `sourceInstrumentation`과 산출물 검증 필드가 남아 있더라도 탐침·산출물 검증을 실행하라는 의미가 아니다. 현재 작업에서 확인하지 않은 값은 성공 근거로 사용하거나 채팅에 검증 결과로 표시하지 않는다. 이 문서 변경으로 JSON 필드나 스키마를 변경하지 않는다.
+
+## 탐침 관련 보고 범위
+
+현재 빌드 절차에서는 탐침 현황을 수집하거나 집계하지 않는다. Java·C#·C/C++ 모두 탐침 성공·실패·제외 건수와 전체 소스 처리 완료를 채팅에 표시하지 않는다. 로그는 보존하되 `sourceInstrumentation`을 만들기 위한 추가 파싱은 수행하지 않는다. 이전 기록이나 형식 예시에 해당 필드가 있더라도 현재 실행에서 관찰한 결과로 사용하지 않는다.
+
 ## 환경별 타깃 기록
 
 - Visual Studio
@@ -176,7 +201,7 @@ Visual Studio, GCC/CMake, GCC/Make, STM32CubeIDE, C#, Java에서 같은 형식�
 
 ## 채팅 표시
 
-[워크플로의 범위와 완료 기준](workflow.md#범위와-완료-기준)에 따라 커버리지 빌드 성공과 스킬 작업 완료를 구분해 보고한다. 계측·산출물 검증 뒤 재사용 설정 적용에 실패했다면, 확인된 빌드 결과를 설명하되 전체 작업이 완료됐다고 하지 않는다. 실패 원인, 복구 결과와 남은 작업을 함께 안내한다.
+[워크플로의 범위와 완료 기준](workflow.md#범위와-완료-기준)에 따라 커버리지 빌드 성공과 스킬 작업 완료를 구분해 보고한다. 커버리지 빌드 성공 뒤 재사용 설정 적용에 실패했다면, 빌드 성공은 유지하고 재사용 준비가 완료되지 않았음을 별도로 설명한다. 실패 원인, 복구 결과와 남은 작업을 함께 안내한다.
 
 채팅의 첫 줄에는 다음 형식으로 전체 작업의 판정을 표시한다.
 
@@ -184,9 +209,10 @@ Visual Studio, GCC/CMake, GCC/Make, STM32CubeIDE, C#, Java에서 같은 형식�
 # 최종 결과: 성공 | 실패 | 사용자 입력 대기 | 모델 판단 대기
 ```
 
-판정 제목 앞에는 인사말, 작업 설명이나 로그 링크를 쓰지 않는다. 제목 바로 아래에는 다음 네 가지를 한 줄씩 표시한다.
+판정 제목 앞에는 인사말, 작업 설명이나 로그 링크를 쓰지 않는다. 제목 바로 아래에는 다음 항목을 한 줄씩 표시한다.
 
 - `커버리지 빌드`: 성공·실패·미실행과 확인된 상태 코드
+- `판정 기준`: 커버리지 빌드 명령의 종료 코드. 탐침 현황은 표시하지 않음
 - `재사용 설정`: 적용 완료·적용 실패·미적용
 - `대상`: 프로젝트, 빌드 시스템과 선택한 구성
 - `다음 조치`: 성공이면 이후 수동 빌드 방법, 실패·대기이면 중단 단계와 필요한 조치
@@ -194,9 +220,9 @@ Visual Studio, GCC/CMake, GCC/Make, STM32CubeIDE, C#, Java에서 같은 형식�
 예를 들어 계측 빌드는 성공했지만 IDE 재사용 설정 검증에 실패했다면 다음처럼 보고한다.
 
 ```text
-# 최종 결과: 실패
+# 최종 결과: 성공
 
-- 커버리지 빌드: 성공 (`COVERAGE_BUILD_VERIFIED`)
+- 커버리지 빌드: 성공 (`COVERAGE_BUILD_SUCCEEDED`, 종료 코드 0)
 - 재사용 설정: 실패
 - 대상: GPIO_EXTI / STM32CubeIDE / Debug
 - 다음 조치: 재사용 설정 실패 원인을 수정한 뒤 적용 검증을 다시 수행해야 함
@@ -205,7 +231,7 @@ Visual Studio, GCC/CMake, GCC/Make, STM32CubeIDE, C#, Java에서 같은 형식�
 첫 요약은 판정을 빠르게 확인하기 위한 것이며 상세 근거를 대신하지 않는다. 그 아래에는 다음 항목을 같은 순서로 반드시 표시한다. 첫 세 항목은 각각 독립된 제목이어야 하며 다른 항목에 합치거나 생략하지 않는다.
 
 1. **프로젝트 환경 및 빌드 파악**: 판정한 언어·빌드 시스템과 핵심 근거, 확인한 프로젝트·빌드 파일, 진입점, 프로젝트·모듈, 타깃, 구성·플랫폼·프레임워크·프로필, 원본 명령과 작업 경로, 실제 관찰한 도구/JDK
-2. **커버리지 빌드 적용**: 실제 실행한 단계별 명령과 작업 경로, 주입 방식, Agent·ToolChainInfo·글루 코드 컴파일러 등 설정, 계측 처리와 설정을 유지하고 재사용하는 방법
+2. **커버리지 빌드 적용**: 실제 실행한 단계별 명령과 작업 경로, 주입 방식, Agent·ToolChainInfo·글루 코드 컴파일러 등 설정, 빌드 종료 코드와 설정을 유지하고 재사용하는 방법
 3. **파일 변경**: `persistentSetup.fileChanges`를 `MODIFIED`와 `CREATED_OR_UPDATED`로 나눠 절대 경로·목적·백업 경로와 함께 표시. 고객 빌드 파일 수정이 없으면 `고객 빌드 파일 수정 없음`을 명시
 4. **산출물**: 절대 경로, 신규 생성·변경 여부, 원본과 동일 경로 여부
 5. **다음 수동 빌드 방법**: `.cover-ee/applied-state.json`의 적용 방식, IDE에서 바로 Rebuild 가능한지 또는 어떤 Maven/Gradle/CMake/Make 명령을 실행해야 하는지

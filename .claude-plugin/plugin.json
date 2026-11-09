@@ -1,8 +1,8 @@
 {
   "name": "covera",
   "displayName": "COVERA",
-  "version": "0.1.0",
-  "description": "Runs Suresoft COVER EE coverage builds from natural-language requests: identifies the original build for C/C++, C#, and Java projects (CMake, Make, Visual Studio/MSBuild, STM32CubeIDE, Maven, Gradle), performs and verifies the instrumented build, and keeps the verified setup for later builds. Also collects coverage memory dumps from STM32CubeIDE debug sessions and diagnoses C/C++ analysis errors with toolchain configuration fixes. Requires a COVER EE Local Agent installation.",
+  "version": "0.1.1",
+  "description": "Runs Suresoft COVER EE coverage builds from natural-language requests: identifies the original build for C/C++, C#, and Java projects (CMake, Make, Visual Studio/MSBuild, STM32CubeIDE, Maven, Gradle), runs the instrumented build while keeping the original output paths, and keeps the successful setup for later builds. Also looks up a module's coverage results on the COVER server and recovers C/C++ files excluded by analysis errors by verifying a toolchain configuration fix on the COVER server. Requires a COVER EE Local Agent installation.",
   "author": {
     "name": "Suresoft Technologies",
     "email": "bizcenter@suresofttech.com",

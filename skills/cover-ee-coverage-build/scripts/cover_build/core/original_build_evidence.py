@@ -62,6 +62,7 @@ def create(job: dict[str, Any], native_build: dict[str, Any]) -> dict[str, Any]:
             "diagnosticLogEvidence": data.get("diagnosticLogEvidence"),
             "actualObservedToolchain": {
                 "family": toolchain.get("family"),
+                "review": toolchain.get("review"),
                 "observation": toolchain.get("observation") or {
                     "kind": "NATIVE" if toolchain.get("family") not in {"CSHARP", "JAVA"} else toolchain.get("family"),
                     "tools": dict(toolchain.get("tools") or {}),

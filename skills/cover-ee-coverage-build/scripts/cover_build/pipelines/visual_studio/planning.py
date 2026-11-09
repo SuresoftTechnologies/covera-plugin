@@ -15,8 +15,9 @@ from cover_build.common import envelopes
 from cover_build.common import fileio
 from cover_build.common import pathutil
 from cover_build.common import processes
-from cover_build.common import toolchains
+from cover_build.services import toolchains
 from cover_build.core import errors
+from cover_build.services import build_execution
 
 
 VS_ENV_SCHEMA = "cover-vs-environment/v1"
@@ -219,7 +220,7 @@ def plan_vs(args: argparse.Namespace) -> dict[str, Any]:
     ] + windows_sdk_properties
     plan = fileio.add_integrity(
         {
-            "schema": processes.PLAN_SCHEMA,
+            "schema": build_execution.PLAN_SCHEMA,
             "jobId": envelopes.CURRENT_JOB_ID,
             "adapter": "MSBUILD_VCXPROJ",
             "projectRoot": str(project_root),
@@ -246,6 +247,9 @@ def plan_vs(args: argparse.Namespace) -> dict[str, Any]:
     for phase in ("rebuild",):
         plan["commands"][phase]["environmentMode"] = "replace"
         plan["commands"][phase]["environment"] = build_environment
+    if getattr(args, "original_plan", None) is not None:
+        from cover_build.planning.native_commands import preserve_native_commands
+        plan = preserve_native_commands(plan, args.original_plan)
     plan = fileio.add_integrity(plan)
     if args.output:
         fileio.atomic_write_json(pathutil.canonical(args.output, False), plan)
