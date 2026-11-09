@@ -33,7 +33,7 @@ To work, it reads the following on your machine:
 - **COVER Local Agent / remote service**, at `CODESCROLL_TM_SERVER_URL`: coverage build and measurement data, sent through the Local Agent that COVER provides. When this address is HTTPS, the server certificate first presented during a job is trusted for that job only, and hostname checks remain on.
 - **Collected coverage files:** verified dump files are delivered to the Local Agent's monitoring folder. From there, the Agent may upload them to the COVER server.
 
-Separately, the plugin's output is shown in your Claude session, including file paths, build logs, and coverage results. Your Claude client sends it to the AI model provider under that provider's privacy policy (for Claude, Anthropic's privacy policy).
+Separately, the plugin's output is shown in your coding agent session, including file paths, build logs, and coverage results. Your coding agent client sends it to the AI model provider under that provider's privacy policy (for Claude, Anthropic's privacy policy).
 
 ## Third parties
 

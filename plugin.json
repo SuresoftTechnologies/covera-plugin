@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "covera",
+  "version": "0.1.0",
+  "description": "Runs Suresoft COVER EE coverage builds from natural-language requests: identifies the original build for C/C++, C#, and Java projects (CMake, Make, Visual Studio/MSBuild, STM32CubeIDE, Maven, Gradle), performs and verifies the instrumented build, and keeps the verified setup for later builds. Also collects coverage memory dumps from STM32CubeIDE debug sessions and diagnoses C/C++ analysis errors with toolchain configuration fixes. Requires a COVER EE Local Agent installation.",
+  "author": {
+    "name": "Suresoft Technologies",
+    "email": "bizcenter@suresofttech.com",
+    "url": "https://www.suresofttech.com"
+  },
+  "homepage": "https://github.com/SuresoftTechnologies/covera-plugin",
+  "repository": "https://github.com/SuresoftTechnologies/covera-plugin",
+  "license": "MIT",
+  "keywords": [
+    "code-coverage",
+    "instrumentation",
+    "embedded",
+    "c",
+    "cpp",
+    "csharp",
+    "java",
+    "cmake",
+    "makefile",
+    "msbuild",
+    "visual-studio",
+    "maven",
+    "gradle",
+    "stm32cubeide"
+  ]
+}

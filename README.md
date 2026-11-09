@@ -2,7 +2,7 @@
 
 > 한국어: [README.ko.md](README.ko.md)
 
-COVERA (COVER AI Agent) is an AI agent that lets you use COVER code coverage in Claude Code. Describe what you want, such as "make a coverage build of this project", and COVERA identifies the project's original build for C/C++, C#, and Java across CMake, Make, Visual Studio/MSBuild, STM32CubeIDE, C# (COVER Toolbox), and Java (JACOV CLI, Maven, Gradle). It then runs the COVER instrumented build, verifies that the instrumented outputs were produced at the original paths, and keeps the verified setup so you can rebuild later from your IDE or the command line. It also collects coverage memory dumps from STM32CubeIDE debug sessions and diagnoses C/C++ analysis errors with a proposed toolchain configuration fix.
+COVERA (COVER AI Agent) is an AI agent that lets you use COVER code coverage in coding agents such as Claude Code, Codex CLI, Cursor, and GitHub Copilot. Describe what you want, such as "make a coverage build of this project", and COVERA identifies the project's original build for C/C++, C#, and Java across CMake, Make, Visual Studio/MSBuild, STM32CubeIDE, C# (COVER Toolbox), and Java (JACOV CLI, Maven, Gradle). It then runs the COVER instrumented build, verifies that the instrumented outputs were produced at the original paths, and keeps the verified setup so you can rebuild later from your IDE or the command line. It also collects coverage memory dumps from STM32CubeIDE debug sessions and diagnoses C/C++ analysis errors with a proposed toolchain configuration fix.
 
 COVER is a code coverage measurement tool that verifies test sufficiency by quantitatively analyzing scenario test execution results.
 
@@ -19,10 +19,10 @@ COVERA does not replace COVER's results. COVER performs the instrumentation and 
 
 ## Workflow at a glance
 
-1. Ask for a coverage build of your project. The first time, Claude asks for your COVER Access Key and the COVER Open API main web server URL.
-2. Claude surveys the project and environment, runs the original build, then runs the instrumented build and checks its outputs.
-3. Claude applies the verified setup and tells you how to rebuild from your IDE or command line.
-4. For STM32 targets, run your tests in STM32CubeIDE, then ask Claude to collect the coverage data.
+1. Ask for a coverage build of your project. The first time, the coding agent asks for your COVER Access Key and the COVER Open API main web server URL.
+2. The coding agent surveys the project and environment, runs the original build, then runs the instrumented build and checks its outputs.
+3. The coding agent applies the verified setup and tells you how to rebuild from your IDE or command line.
+4. For STM32 targets, run your tests in STM32CubeIDE, then ask the coding agent to collect the coverage data.
 
 The skills in this repository work with a COVER EE Local Agent installation. They are not a replacement for COVER.
 
@@ -34,7 +34,7 @@ Add COVERA from Anthropic's plugin directory on claude.ai (**Customize > Plugins
 claude --plugin-dir ./covera-plugin
 ```
 
-COVERA is for Claude Code: its scripts run on your machine against a local COVER EE Local Agent and your build tools. Without COVER, or when its settings are missing, a skill stops at its setup check and says what is missing.
+COVERA's scripts run on your machine against a local COVER EE Local Agent and your build tools. Without COVER, or when its settings are missing, a skill stops at its setup check and says what is missing.
 
 ## Example requests
 
@@ -50,7 +50,7 @@ Responses can vary with the AI model and the conversation. If the result isn't w
 
 ## Skills
 
-All skills need a COVER EE Local Agent installation for their product-backed actions. Claude picks the skill from your request; you can also run one directly, for example `/covera:cover-ee-coverage-build`.
+All skills need a COVER EE Local Agent installation for their product-backed actions. The coding agent picks the skill from your request; you can also run one directly, for example `/covera:cover-ee-coverage-build`.
 
 | Skill | Workflow stage |
 |---|---|
@@ -87,7 +87,7 @@ COVERA's scripts run on your machine.
 - It connects only to the COVER server you provide, with your Access Key, and registers this machine's Local Agent and its toolchains on the server when needed. By default, the certificate is not verified, because COVER servers often use internal certificates. Pass `--verify-tls` to require verification.
 - After the first successful authentication, the server URL and Access Key are saved in plain text to `<CODESCROLL_TM_INSTALL_PATH>/agent_kit/open-api-credentials.json` so you aren't asked again. Delete the file to stop reuse. The Access Key is never written to logs.
 - For Java, `~/cover_jacov.json` is created when missing.
-- Its output, such as file paths, build logs, and coverage results, appears in your Claude session and is sent to the AI model provider by your Claude client.
+- Its output, such as file paths, build logs, and coverage results, appears in your coding agent session and is sent to the AI model provider by your coding agent client.
 - Data that COVER itself keeps follows COVER's own data handling policy.
 
 The full policy is in [PRIVACY.md](PRIVACY.md). For support and questions, contact [bizcenter@suresofttech.com](mailto:bizcenter@suresofttech.com).

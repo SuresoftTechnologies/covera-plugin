@@ -2,7 +2,7 @@
 
 > English: [README.md](README.md)
 
-COVERA(COVER AI Agent)는 Claude Code에서 COVER 코드 커버리지를 사용할 수 있게 해 주는 AI 에이전트입니다. "이 프로젝트 커버리지 빌드해줘"처럼 요청하면 COVERA가 C/C++, C#, Java 프로젝트의 원본 빌드를 파악합니다. CMake, Make, Visual Studio/MSBuild, STM32CubeIDE, C#(COVER Toolbox), Java(JACOV CLI, Maven, Gradle)를 지원합니다. 이어서 COVER 계측 빌드를 수행하고, 계측 산출물이 원본과 같은 경로에 만들어졌는지 확인한 뒤, 검증된 설정을 남겨 두어 이후에도 IDE나 명령행에서 다시 빌드할 수 있게 합니다. 또한 STM32CubeIDE Debug 세션에서 커버리지 메모리 덤프를 수집하고, C/C++ 분석 오류의 원인을 진단해 툴체인 설정 수정안을 제시합니다.
+COVERA(COVER AI Agent)는 Claude Code, Codex CLI, Cursor, GitHub Copilot 등의 코딩 에이전트에서 COVER 코드 커버리지를 사용할 수 있게 해 주는 AI 에이전트입니다. "이 프로젝트 커버리지 빌드해줘"처럼 요청하면 COVERA가 C/C++, C#, Java 프로젝트의 원본 빌드를 파악합니다. CMake, Make, Visual Studio/MSBuild, STM32CubeIDE, C#(COVER Toolbox), Java(JACOV CLI, Maven, Gradle)를 지원합니다. 이어서 COVER 계측 빌드를 수행하고, 계측 산출물이 원본과 같은 경로에 만들어졌는지 확인한 뒤, 검증된 설정을 남겨 두어 이후에도 IDE나 명령행에서 다시 빌드할 수 있게 합니다. 또한 STM32CubeIDE Debug 세션에서 커버리지 메모리 덤프를 수집하고, C/C++ 분석 오류의 원인을 진단해 툴체인 설정 수정안을 제시합니다.
 
 COVER는 시나리오 테스트 수행 결과를 정량적으로 분석하여 테스트 충분성을 검증하는 코드 커버리지 측정 도구입니다.
 
@@ -19,10 +19,10 @@ COVERA가 COVER의 결과를 대신하지는 않습니다. 계측과 측정을 �
 
 ## 사용 흐름
 
-1. 프로젝트의 커버리지 빌드를 요청합니다. 처음 요청할 때는 Claude가 COVER Access Key와 COVER Open API 메인 웹 서버 URL을 묻습니다.
-2. Claude가 프로젝트와 환경을 조사하고 원본 빌드를 실행한 뒤, 계측 빌드를 수행하고 산출물을 확인합니다.
-3. Claude가 검증된 설정을 적용하고, IDE나 명령행에서 다시 빌드하는 방법을 알려 줍니다.
-4. STM32 타깃이라면 STM32CubeIDE에서 테스트를 수행한 뒤, Claude에게 커버리지 데이터 수집을 요청합니다.
+1. 프로젝트의 커버리지 빌드를 요청합니다. 처음 요청할 때는 코딩 에이전트가 COVER Access Key와 COVER Open API 메인 웹 서버 URL을 묻습니다.
+2. 코딩 에이전트가 프로젝트와 환경을 조사하고 원본 빌드를 실행한 뒤, 계측 빌드를 수행하고 산출물을 확인합니다.
+3. 코딩 에이전트가 검증된 설정을 적용하고, IDE나 명령행에서 다시 빌드하는 방법을 알려 줍니다.
+4. STM32 타깃이라면 STM32CubeIDE에서 테스트를 수행한 뒤, 코딩 에이전트에게 커버리지 데이터 수집을 요청합니다.
 
 이 저장소의 스킬은 설치된 COVER EE Local Agent와 함께 동작하며, COVER를 대신하지 않습니다.
 
@@ -34,7 +34,7 @@ claude.ai의 Anthropic 플러그인 디렉터리(**Customize > Plugins**)에서 
 claude --plugin-dir ./covera-plugin
 ```
 
-COVERA는 Claude Code 전용입니다. 스크립트는 사용자 PC에서 실행되며, 그 PC에 설치된 COVER EE Local Agent와 빌드 도구를 사용합니다. COVER가 설치되어 있지 않거나 설정이 빠져 있으면 스킬은 설정 확인 단계에서 멈추고 무엇이 빠졌는지 알려 줍니다.
+COVERA의 스크립트는 사용자 PC에서 실행되며, 그 PC에 설치된 COVER EE Local Agent와 빌드 도구를 사용합니다. COVER가 설치되어 있지 않거나 설정이 빠져 있으면 스킬은 설정 확인 단계에서 멈추고 무엇이 빠졌는지 알려 줍니다.
 
 ## 요청 예시
 
@@ -50,7 +50,7 @@ COVERA는 Claude Code 전용입니다. 스크립트는 사용자 PC에서 실행
 
 ## 스킬
 
-모든 스킬은 COVER와 연동되는 작업을 하려면 설치된 COVER EE Local Agent가 필요합니다. Claude가 요청에 맞는 스킬을 고르며, `/covera:cover-ee-coverage-build`처럼 직접 실행할 수도 있습니다.
+모든 스킬은 COVER와 연동되는 작업을 하려면 설치된 COVER EE Local Agent가 필요합니다. 코딩 에이전트가 요청에 맞는 스킬을 고르며, `/covera:cover-ee-coverage-build`처럼 직접 실행할 수도 있습니다.
 
 | 스킬 | 하는 일 |
 |---|---|
@@ -87,7 +87,7 @@ COVERA의 스크립트는 사용자 PC에서 실행됩니다.
 - 사용자가 알려 준 COVER 서버에만 Access Key로 접속하며, 필요하면 서버에 이 PC의 Local Agent와 툴체인을 등록합니다. 사내 인증서를 쓰는 환경이 많아 기본적으로 인증서를 검증하지 않습니다. 검증이 필요하면 `--verify-tls`를 지정합니다.
 - 첫 인증에 성공하면 서버 주소와 Access Key를 `<CODESCROLL_TM_INSTALL_PATH>/agent_kit/open-api-credentials.json`에 평문으로 저장해 다음부터 다시 묻지 않습니다. 저장된 값을 쓰지 않으려면 이 파일을 삭제하세요. Access Key는 로그에 남기지 않습니다.
 - Java 프로젝트에서는 `~/cover_jacov.json`이 없으면 새로 만듭니다.
-- 파일 경로, 빌드 로그, 커버리지 결과 같은 출력은 Claude 세션에 표시되며, Claude 클라이언트를 통해 AI 모델 제공자에게 전송됩니다.
+- 파일 경로, 빌드 로그, 커버리지 결과 같은 출력은 코딩 에이전트 세션에 표시되며, 코딩 에이전트 클라이언트를 통해 AI 모델 제공자에게 전송됩니다.
 - COVER가 직접 남기는 데이터는 COVER 제품의 데이터 처리 방침을 따릅니다.
 
 전체 내용은 [PRIVACY.md](PRIVACY.md)를 참고하세요. 지원 및 문의는 [bizcenter@suresofttech.com](mailto:bizcenter@suresofttech.com)으로 연락하세요.
