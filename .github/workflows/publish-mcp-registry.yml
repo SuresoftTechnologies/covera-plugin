@@ -84,10 +84,14 @@ jobs:
       - name: Create the release and upload the bundle
         run: |
           set -euo pipefail
-          if ! gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" \
-              --title "${TAG}" --generate-notes
-          fi
+          # Always start from a fresh, published release so a re-run never
+          # publishes a draft. If the tag was ever moved, GitHub turns the old
+          # release into a draft whose assets are not publicly downloadable, and
+          # the registry then cannot fetch the bundle. Deleting the release
+          # (keeping the git tag) and recreating it avoids that entirely.
+          gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag=false 2>/dev/null || true
+          gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --title "${TAG}" --generate-notes
           gh release upload "${TAG}" covera-mcp.mcpb --repo "${GITHUB_REPOSITORY}" --clobber
 
       - name: Write the real hash and URL into server.json for publishing
