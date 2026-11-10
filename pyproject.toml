@@ -1,0 +1,11 @@
+[project]
+name = "covera-mcp"
+version = "0.1.0"
+description = "MCP server exposing Suresoft COVER EE coverage-build, measurement, and toolchain-recovery tools"
+requires-python = ">=3.11"
+# No third-party dependencies on purpose: the server speaks JSON-RPC over stdio
+# directly and reaches COVER through the plugin's own skill scripts (run as
+# subprocesses), so it runs on a bare interpreter with nothing to install. The
+# uv server type fetches a matching CPython; requires-python keeps it at 3.11+,
+# which the skill runtimes need.
+dependencies = []
