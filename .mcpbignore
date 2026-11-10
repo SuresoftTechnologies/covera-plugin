@@ -18,6 +18,7 @@ scripts/covera-mcp.cmd
 tests/
 RELEASING.md
 server.json
+glama.json
 README.ko.md
 
 # Python / build caches
