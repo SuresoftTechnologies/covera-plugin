@@ -4,7 +4,7 @@
   "display_name": "COVERA COVER coverage tools",
   "version": "0.1.0",
   "description": "Brings Suresoft COVER EE into an MCP client: run a coverage build for a C/C++, C#, or Java project, look up a module's coverage on the COVER server, and recover C/C++ files excluded by analysis errors. Requires a COVER EE Local Agent installation; without one the server reports a single environment check.",
-  "long_description": "COVERA exposes Suresoft COVER EE to an MCP client. It plans and runs instrumented coverage builds keeping the original output paths, reads module coverage results from the COVER server, and verifies toolchain-configuration fixes on the server to recover files excluded by analysis errors.\n\nEach call runs the plugin's own skill script on the same machine as a short-lived subprocess. A coverage build with execute changes the project's build setup and registers the module on the shared COVER server, and applying a recovery changes the server, so those are approval-gated: read the bundled procedure with covera_get_guide and follow it. The Open API Access Key is read from the Local Agent's cached credentials or COVER_ACCESS_KEY; the server never prompts for, prints, or stores it.\n\nA COVER EE Local Agent installation (with CODESCROLL_TM_INSTALL_PATH set, or the install path supplied in this bundle's configuration) and Python 3.10+ are required. Without one the server still starts and covera_doctor reports what is missing.",
+  "long_description": "COVERA exposes Suresoft COVER EE to an MCP client. It plans and runs instrumented coverage builds keeping the original output paths, reads module coverage results from the COVER server, and verifies toolchain-configuration fixes on the server to recover files excluded by analysis errors.\n\nEach call runs the plugin's own skill script on the same machine as a short-lived subprocess. A coverage build with execute changes the project's build setup and registers the module on the shared COVER server, and applying a recovery changes the server, so those are approval-gated: read the bundled procedure with covera_get_guide and follow it. The Open API Access Key is read from the Local Agent's cached credentials or COVER_ACCESS_KEY; the server never prompts for, prints, or stores it.\n\nA COVER EE Local Agent installation (with CODESCROLL_TM_INSTALL_PATH set in the environment) and Python 3.11+ are required. Without one the server still starts and covera_doctor reports what is missing.",
   "author": {
     "name": "Suresoft Technologies",
     "email": "bizcenter@suresofttech.com",
@@ -31,14 +31,6 @@
     "java",
     "embedded"
   ],
-  "user_config": {
-    "install_path": {
-      "type": "directory",
-      "title": "COVER EE Local Agent install directory",
-      "description": "Leave empty when CODESCROLL_TM_INSTALL_PATH is already set on this machine. Set it only to point COVERA at a COVER EE Local Agent installation that the environment does not already expose.",
-      "required": false
-    }
-  },
   "server": {
     "type": "uv",
     "entry_point": "scripts/mcp_server.py",
@@ -49,10 +41,7 @@
         "--project",
         "${__dirname}",
         "${__dirname}/scripts/mcp_server.py"
-      ],
-      "env": {
-        "COVERA_INSTALL_PATH": "${user_config.install_path}"
-      }
+      ]
     }
   },
   "tools_generated": true,

@@ -66,11 +66,9 @@ COVER_ACCESS_KEY. Never ask for, print, or store it.
 PROGRESS_INTERVAL = 15
 
 COVER_KEY_ENV = "COVER_ACCESS_KEY"
-# The MCPB bundle receives the install path as its own user_config and passes it
-# through this variable; the server copies it to the variable the skills read
-# only when it is non-empty, so an empty bundle config never clobbers a
-# CODESCROLL_TM_INSTALL_PATH already set on the machine.
-INSTALL_PATH_ENV = "COVERA_INSTALL_PATH"
+# The COVER EE Local Agent install path. Set in the environment when the Local
+# Agent is installed; the server reads it from the inherited environment and
+# never overrides it.
 CLI_INSTALL_ENV = "CODESCROLL_TM_INSTALL_PATH"
 
 
@@ -111,16 +109,6 @@ def entry_path(entry):
     return path if path.is_file() else None
 
 
-def install_env(env):
-    """Move COVERA_INSTALL_PATH into CODESCROLL_TM_INSTALL_PATH when it is
-    filled; leave the machine's own value otherwise. Returns a copy."""
-    override = (env.get(INSTALL_PATH_ENV) or "").strip()
-    if override:
-        env = dict(env)
-        env[CLI_INSTALL_ENV] = override
-    return env
-
-
 def _cached_credentials(env):
     """The cached Open API {url, hasKey} from the Local Agent install, or None.
 
@@ -128,7 +116,7 @@ def _cached_credentials(env):
     The Access Key itself is never returned or logged -- only whether one is
     present and the (non-secret) server URL.
     """
-    install = (env.get(CLI_INSTALL_ENV) or env.get(INSTALL_PATH_ENV) or "").strip()
+    install = (env.get(CLI_INSTALL_ENV) or "").strip()
     if not install:
         return None
     path = Path(install) / "agent_kit" / "open-api-credentials.json"
@@ -241,7 +229,7 @@ def run_command(cmd, cwd=None, timeout=catalog.DEFAULT_TIMEOUT, on_tick=None,
     error is set only when the process could not be started or did not finish;
     otherwise stdout_text and returncode are set.
     """
-    env = install_env(dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"))
+    env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     if env_extra:
         env.update(env_extra)
     try:
@@ -295,8 +283,7 @@ def guide_result(arguments):
 
 
 def doctor_result(env=None):
-    env = os.environ if env is None else env
-    env = install_env(dict(env))
+    env = dict(os.environ if env is None else env)
     install = (env.get(CLI_INSTALL_ENV) or "").strip()
     cached = _cached_credentials(env)
     scripts = {entry: (entry_path(entry) is not None) for entry in ENTRY_SCRIPTS}

@@ -80,7 +80,7 @@ The tools mirror the skills:
 
 Three prompts, `coverage-build`, `coverage-measure` and `toolchain-recovery`, start the guided flows. A coverage build with `execute`, and applying a recovery (`covera_recovery_publish`), change the project's build setup or the shared COVER server, so they carry consent hints and ask for your approval first; read `covera_get_guide` before driving them. Without a COVER EE Local Agent the server still starts and `covera_doctor` reports what is missing, so it is safe to leave configured on any machine.
 
-The bundle reads the Local Agent from `CODESCROLL_TM_INSTALL_PATH`. When that is not already set on the machine, supply the path through the bundle's `COVERA_INSTALL_PATH` configuration; an empty value leaves the machine's own setting untouched. The Open API Access Key is never passed as a tool argument or printed: the build flow reads it from the Local Agent's cached credentials or `COVER_ACCESS_KEY`, and the recovery flow reads `COVER_ACCESS_KEY` (or the cached key when the requested server matches the cached one).
+The bundle finds the Local Agent through `CODESCROLL_TM_INSTALL_PATH`, which the Local Agent installation sets in your environment; the server reads it from there and `covera_doctor` reports if it is missing. The Open API Access Key is never passed as a tool argument or printed: the build flow reads it from the Local Agent's cached credentials or `COVER_ACCESS_KEY`, and the recovery flow reads `COVER_ACCESS_KEY` (or the cached key when the requested server matches the cached one).
 
 ## Product-backed workflow
 
