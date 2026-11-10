@@ -80,7 +80,7 @@ COVERA는 같은 세 스킬을 어떤 MCP 클라이언트(Claude Desktop, Cursor
 
 `coverage-build`, `coverage-measure`, `toolchain-recovery` 세 프롬프트가 안내 흐름을 시작합니다. `execute`를 포함한 커버리지 빌드와 복구 반영(`covera_recovery_publish`)은 프로젝트의 빌드 설정이나 공용 COVER 서버를 바꾸므로, 동의 힌트를 달아 매번 승인을 받고, 실행 전 `covera_get_guide`를 먼저 읽습니다. COVER EE Local Agent가 없어도 서버는 뜨고 `covera_doctor`가 무엇이 빠졌는지 알려 주므로, 어느 PC에 설정해 두어도 안전합니다.
 
-번들은 Local Agent 경로를 `CODESCROLL_TM_INSTALL_PATH`에서 읽습니다. 이 값이 PC에 설정되어 있지 않으면 번들의 `COVERA_INSTALL_PATH` 설정으로 경로를 넘기며, 빈 값이면 PC의 기존 설정을 건드리지 않습니다. Open API Access Key는 도구 인자로 받지도, 출력하지도 않습니다. 빌드 흐름은 Local Agent의 캐시 자격 증명이나 `COVER_ACCESS_KEY`에서 읽고, 복구 흐름은 `COVER_ACCESS_KEY`(또는 요청 서버가 캐시된 서버와 일치할 때 캐시 키)에서 읽습니다.
+번들은 Local Agent 경로를 `CODESCROLL_TM_INSTALL_PATH`에서 찾습니다. 이 값은 Local Agent 설치 시 환경에 설정되며, 서버는 그 환경변수를 읽고 없으면 `covera_doctor`가 알려 줍니다. Open API Access Key는 도구 인자로 받지도, 출력하지도 않습니다. 빌드 흐름은 Local Agent의 캐시 자격 증명이나 `COVER_ACCESS_KEY`에서 읽고, 복구 흐름은 `COVER_ACCESS_KEY`(또는 요청 서버가 캐시된 서버와 일치할 때 캐시 키)에서 읽습니다.
 
 ## COVER 연동 방식
 

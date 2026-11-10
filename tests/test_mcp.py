@@ -174,17 +174,6 @@ class JsonExtractTests(unittest.TestCase):
         self.assertIsNone(server._extract_json("no json here"))
 
 
-class InstallEnvTests(unittest.TestCase):
-    def test_override_applied_when_set(self):
-        out = server.install_env({server.INSTALL_PATH_ENV: "  C:/agent  "})
-        self.assertEqual(out[server.CLI_INSTALL_ENV], "C:/agent")
-
-    def test_empty_leaves_existing(self):
-        env = {server.INSTALL_PATH_ENV: "", server.CLI_INSTALL_ENV: "keep"}
-        out = server.install_env(env)
-        self.assertEqual(out[server.CLI_INSTALL_ENV], "keep")
-
-
 class CredentialTests(unittest.TestCase):
     def _install_with_cache(self, url, key):
         install = abs_dir()

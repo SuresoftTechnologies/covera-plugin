@@ -106,12 +106,11 @@ rewriting the server; `binary` needs a per-platform build.
 
 ## The install path
 
-The skills find the COVER EE Local Agent through `CODESCROLL_TM_INSTALL_PATH`.
-The bundle exposes a `COVERA_INSTALL_PATH` user config instead, and the server
-copies it to `CODESCROLL_TM_INSTALL_PATH` **only when it is non-empty**
-(`install_env` in `scripts/covera_mcp/server.py`). An empty user config must not
-overwrite a `CODESCROLL_TM_INSTALL_PATH` already set on the machine, which is
-why the names differ.
+The skills find the COVER EE Local Agent through `CODESCROLL_TM_INSTALL_PATH`,
+which the Local Agent installation sets in the environment. The server reads it
+from the inherited environment and does not override it; the bundle exposes no
+install-path config of its own. When it is unset, `covera_doctor` reports it as
+missing.
 
 ## Credentials
 
