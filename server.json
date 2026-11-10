@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.SuresoftTechnologies/covera-mcp",
   "title": "COVERA COVER coverage tools",
-  "description": "Drive Suresoft COVER EE from a coding agent: coverage builds, module coverage lookup, toolchain-error recovery.",
+  "description": "Drive Suresoft COVER EE from a coding agent: coverage builds, coverage lookup, toolchain recovery.",
   "version": "0.1.0",
   "repository": {
     "url": "https://github.com/SuresoftTechnologies/covera-plugin",
