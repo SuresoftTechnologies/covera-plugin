@@ -1,0 +1,120 @@
+# Builds the MCP bundle, attaches it to a GitHub release, and publishes
+# server.json to the official MCP Registry -- all from one pushed tag.
+#
+# The MCP server is versioned independently of the Claude Code / Gemini plugin,
+# so its release tags are prefixed mcp-v (e.g. mcp-v0.1.0). Plugin releases
+# (v*) do not trigger this workflow. Per release a maintainer bumps the MCP
+# version in the tracked files and pushes an mcp-vX.Y.Z tag (see RELEASING.md).
+# This workflow then:
+#   1. checks the tag matches the version in the MCP's tracked files
+#   2. packs the .mcpb bundle (mcpb pack is not reproducible, so it is built
+#      here once and that exact file is both released and hashed)
+#   3. creates the GitHub release and uploads the bundle
+#   4. computes fileSha256 from the uploaded file and writes it, with the
+#      tag's download URL, into a server.json used only for publishing
+#   5. validates and publishes to the registry via GitHub OIDC
+#
+# The registry does not verify the hash; MCP clients do. Computing it here from
+# the exact released bytes removes the stale-hash mistake entirely. The
+# server.json committed in the repo keeps a placeholder hash on purpose -- the
+# real value is produced at release time and never committed back.
+#
+# Authentication is GitHub Actions OIDC: the registry reads repository_owner
+# from the token and grants io.github.<owner>/*, so no stored secret is needed.
+name: Publish to MCP Registry
+
+on:
+  push:
+    tags:
+      - "mcp-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish, e.g. mcp-v0.1.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # mint the OIDC token for the registry
+      contents: write   # create the release and upload the bundle
+    env:
+      TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check the tag matches the tracked version
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.version' server.json)"
+          if [ "mcp-v${version}" != "${TAG}" ]; then
+            echo "::error::Tag ${TAG} does not match server.json version v${version}." \
+                 "Bump the MCP version fields and tag that commit (see RELEASING.md)."
+            exit 1
+          fi
+          manifest_v="$(jq -r '.version' manifest.json)"
+          if [ "$manifest_v" != "$version" ]; then
+            echo "::error::manifest.json has version $manifest_v, expected $version."; exit 1
+          fi
+          pyproject_v="$(grep -oE 'version\s*=\s*"[^"]+"' pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [ "$pyproject_v" != "$version" ]; then
+            echo "::error::pyproject.toml has version $pyproject_v, expected $version."; exit 1
+          fi
+          if ! grep -q "\"version\": \"${version}\"" scripts/covera_mcp/server.py; then
+            echo "::error::SERVER_INFO in scripts/covera_mcp/server.py is not ${version}."; exit 1
+          fi
+
+      - name: Pack the MCP bundle
+        run: npx --yes @anthropic-ai/mcpb pack . covera-mcp.mcpb
+
+      - name: Validate the bundle manifest
+        run: npx --yes @anthropic-ai/mcpb validate manifest.json
+
+      - name: Create the release and upload the bundle
+        run: |
+          set -euo pipefail
+          if ! gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" \
+              --title "${TAG}" --generate-notes
+          fi
+          gh release upload "${TAG}" covera-mcp.mcpb --repo "${GITHUB_REPOSITORY}" --clobber
+
+      - name: Write the real hash and URL into server.json for publishing
+        run: |
+          set -euo pipefail
+          sha="$(sha256sum covera-mcp.mcpb | cut -d' ' -f1)"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/covera-mcp.mcpb"
+          jq --arg sha "$sha" --arg url "$url" \
+            '.packages[0].fileSha256 = $sha | .packages[0].identifier = $url' \
+            server.json > server.publish.json
+          echo "Publishing with sha256 ${sha}"
+          jq '.packages[0]' server.publish.json
+
+      - name: Install mcp-publisher
+        env:
+          VERSION: v1.8.1
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/${VERSION}/mcp-publisher_linux_amd64.tar.gz" \
+            | tar -xz mcp-publisher
+          ./mcp-publisher --version
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate server.publish.json
+
+      - name: Log in via OIDC
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to the registry
+        run: ./mcp-publisher publish server.publish.json

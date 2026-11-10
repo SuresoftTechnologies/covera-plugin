@@ -58,6 +58,30 @@ COVERA의 스크립트는 사용자 PC에서 실행되며, 그 PC에 설치된 C
 | `cover-ee-coverage-measure` | COVER 서버에 저장된 모듈의 최신 누적 커버리지를 읽기 전용으로 조회하고, 요청하면 파일·함수별 결과를 보여 줍니다. 테스트 실행, 새 데이터 수집, 빌드는 하지 않습니다. COVER 서버 URL과 Access Key만 있으면 됩니다. |
 | `cover-toolchain-recovery` | 분석 오류로 빠진 C/C++ 파일을 복구합니다. COVER 서버에서 오류 자료를 확보해 원인을 진단하고, 최소한의 파서 설정 수정안을 서버에서 COVER PA(`tmpa`)를 실행해 검증합니다. 검증에 성공하면 서버에 새 툴체인을 등록하고 wrapper를 연결한 뒤 재빌드를 인계합니다. 진단만 요청하면 진단에서 멈춥니다. |
 
+## MCP 서버
+
+COVERA는 같은 세 스킬을 어떤 MCP 클라이언트(Claude Desktop, Cursor, VS Code 등)에서도 쓸 수 있도록 MCP 서버도 함께 제공합니다. 스킬을 로드하지 않는 클라이언트도 전체 흐름(커버리지 빌드, 모듈 커버리지 조회, 툴체인 오류 복구)을 그대로 사용할 수 있습니다. 각 스킬이 따르는 절차는 도구(`covera_get_guide`)로 돌려주므로, 스킬이 없는 클라이언트도 같은 지침을 따라 작업할 수 있습니다.
+
+공식 MCP 레지스트리에 `io.github.SuresoftTechnologies/covera-mcp`로 등재되어 있으며, 플러그인과는 별개로 버전을 관리합니다(릴리스 태그는 `mcp-v` 접두사).
+
+실행 방법은 세 가지입니다.
+
+- **플러그인과 함께.** COVERA를 설치하면 서버가 자동으로 등록되어(`.mcp.json`), Claude Code에서 스킬과 함께 도구를 바로 쓸 수 있습니다.
+- **번들로.** 이 저장소의 릴리스에서 `covera-mcp.mcpb`를 내려받아 MCP 번들을 설치하는 클라이언트로 엽니다. 자체적으로 Python을 준비하므로 먼저 설치할 것이 없습니다.
+- **인터프리터를 직접 지정.** `scripts/mcp_server.py`를 Python 3.11 이상으로 실행합니다. 런처 `scripts/covera-mcp.cmd`가 Windows와 Linux에서 동작하는 인터프리터를 고릅니다.
+
+도구는 스킬에 대응합니다.
+
+| 구분 | 도구 |
+|---|---|
+| 읽기 전용 | `covera_doctor`, `covera_coverage_measure`, `covera_recovery_discover`, `covera_recovery_inspect`, `covera_get_guide` |
+| 커버리지 빌드 | `covera_coverage_build` (계획 후 실행) |
+| 툴체인 복구 | `covera_recovery_start`, `_collect`, `_verify`, `_publish_plan`, `_publish` |
+
+`coverage-build`, `coverage-measure`, `toolchain-recovery` 세 프롬프트가 안내 흐름을 시작합니다. `execute`를 포함한 커버리지 빌드와 복구 반영(`covera_recovery_publish`)은 프로젝트의 빌드 설정이나 공용 COVER 서버를 바꾸므로, 동의 힌트를 달아 매번 승인을 받고, 실행 전 `covera_get_guide`를 먼저 읽습니다. COVER EE Local Agent가 없어도 서버는 뜨고 `covera_doctor`가 무엇이 빠졌는지 알려 주므로, 어느 PC에 설정해 두어도 안전합니다.
+
+번들은 Local Agent 경로를 `CODESCROLL_TM_INSTALL_PATH`에서 읽습니다. 이 값이 PC에 설정되어 있지 않으면 번들의 `COVERA_INSTALL_PATH` 설정으로 경로를 넘기며, 빈 값이면 PC의 기존 설정을 건드리지 않습니다. Open API Access Key는 도구 인자로 받지도, 출력하지도 않습니다. 빌드 흐름은 Local Agent의 캐시 자격 증명이나 `COVER_ACCESS_KEY`에서 읽고, 복구 흐름은 `COVER_ACCESS_KEY`(또는 요청 서버가 캐시된 서버와 일치할 때 캐시 키)에서 읽습니다.
+
 ## COVER 연동 방식
 
 COVERA는 COVER EE Local Agent가 설치된 환경에서 사용합니다. 이 저장소에는 스킬과 스킬이 실행하는 스크립트가 들어 있으며, COVER 자체는 포함되어 있지 않습니다. COVER 없이 계측이나 측정이 수행됐다고 보고하지 않습니다.
@@ -82,7 +106,7 @@ COVERA는 COVER EE Local Agent가 설치된 환경에서 사용합니다. 이 �
 
 COVERA의 스크립트는 사용자 PC에서 실행됩니다.
 
-- Suresoft Technologies로 어떤 데이터도 보내지 않으며, 텔레메트리도 수집하지 않습니다.
+- Suresoft Technologies로 어떤 데이터도 보내지 않으며, 텔레메트리도 수집하지 않습니다. MCP 서버도 자체 텔레메트리가 없으며, 각 호출을 로컬 스킬 런타임으로 전달할 뿐 자체 네트워크 호출을 하지 않습니다.
 - 사용자가 알려 준 COVER 서버에만 Access Key로 접속하며, 필요하면 서버에 이 PC의 Local Agent와 툴체인을 등록합니다. 툴체인 복구는 서버가 PA를 실행할 수 있도록 소스 경로, 이 PC의 MAC 주소, 컴파일러 ID, 수정한 설정을 서버로 보냅니다. 사내 인증서를 쓰는 환경이 많아 기본적으로 인증서를 검증하지 않습니다. 검증이 필요하면 `--verify-tls`를 지정합니다.
 - 첫 인증에 성공하면 서버 주소와 Access Key를 `<CODESCROLL_TM_INSTALL_PATH>/agent_kit/open-api-credentials.json`에 평문으로 저장해 다음부터 다시 묻지 않습니다. 저장된 값을 쓰지 않으려면 이 파일을 삭제하세요. Access Key는 로그에 남기지 않습니다.
 - Java 프로젝트에서는 `~/cover_jacov.json`이 없으면 새로 만듭니다.

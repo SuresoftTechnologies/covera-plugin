@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "covera-mcp": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/covera-mcp.cmd",
+      "args": []
+    }
+  }
+}

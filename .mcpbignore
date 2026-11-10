@@ -1,0 +1,33 @@
+# The MCPB bundle carries the MCP server and the runtime it drives: scripts/
+# (the server) and skills/ (each skill's entry scripts and the SKILL.md /
+# reference text that covera_get_guide serves). Everything that belongs only to
+# the Claude Code / Gemini plugin, or only to the repo, is left out.
+
+# Plugin surface, not used by the MCP bundle
+.claude-plugin/
+plugin.json
+gemini-extension.json
+.mcp.json
+scripts/covera-mcp.cmd
+
+# Repo / release tooling
+.git/
+.github/
+.gitignore
+.gitattributes
+tests/
+RELEASING.md
+server.json
+README.ko.md
+
+# Python / build caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+uv.lock
+*.mcpb
