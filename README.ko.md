@@ -62,7 +62,7 @@ COVERA의 스크립트는 사용자 PC에서 실행되며, 그 PC에 설치된 C
 
 COVERA는 같은 세 스킬을 어떤 MCP 클라이언트(Claude Desktop, Cursor, VS Code 등)에서도 쓸 수 있도록 MCP 서버도 함께 제공합니다. 스킬을 로드하지 않는 클라이언트도 전체 흐름(커버리지 빌드, 모듈 커버리지 조회, 툴체인 오류 복구)을 그대로 사용할 수 있습니다. 각 스킬이 따르는 절차는 도구(`covera_get_guide`)로 돌려주므로, 스킬이 없는 클라이언트도 같은 지침을 따라 작업할 수 있습니다.
 
-공식 MCP 레지스트리에 `io.github.SuresoftTechnologies/covera-mcp`로 등재되어 있으며, 플러그인과는 별개로 버전을 관리합니다(릴리스 태그는 `mcp-v` 접두사).
+공식 MCP 레지스트리에 `io.github.SuresoftTechnologies/covera-mcp`로 등재되어 있으며, 플러그인과 같은 버전을 쓰며, `vX.Y.Z` 릴리스 하나로 둘을 함께 배포합니다.
 
 실행 방법은 세 가지입니다.
 

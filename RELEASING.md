@@ -1,35 +1,36 @@
-# Releasing the MCP bundle
+# Releasing COVERA
 
-The MCP server in `scripts/` is distributed as an MCP Bundle (`.mcpb`) attached
-to a GitHub release and listed in the official MCP registry through
-`server.json`. The Claude Code / Gemini plugin (skills, `.mcp.json`) is a
-separate distribution with its own version in `plugin.json` /
-`gemini-extension.json`, and is **not** affected by these steps.
+COVERA has one version. The Claude Code / Gemini plugin (skills, `.mcp.json`)
+and the MCP server in `scripts/` share it, and one `vX.Y.Z` tag on `main`
+releases both: the MCP server as an MCP Bundle (`.mcpb`) attached to the GitHub
+release and listed in the official MCP registry through `server.json`, and the
+plugin at that same commit.
 
-The MCP server is versioned independently of the plugin. Its release tags are
-prefixed `mcp-v` (for example `mcp-v0.1.0`); plugin releases use plain `v*`
-tags and do not trigger the MCP workflow. This keeps the two cadences apart and
-means a plugin bump never forces an MCP republish, nor the reverse.
+The Claude directory distribution lives on the `claude-directory` branch. It is
+cut from the tagged `main` commit, keeps the same version, records
+`Source-main: <sha>` in its commit message, and is never merged back into
+`main`.
 
-**Releasing is automated.** A maintainer bumps the MCP version in the tracked
-files and pushes an `mcp-v` tag. `.github/workflows/publish-mcp-registry.yml`
-then builds the bundle, creates the GitHub release, uploads the bundle, hashes
-it, and publishes `server.json` to the registry. There is no manual bundle
-build or hash step.
+The first releases used separate MCP tags (`mcp-v0.1.0`); from `v0.1.2` on the
+plugin and the MCP server are released together under plain `v*` tags.
+
+**Releasing is automated.** A maintainer bumps the version in the tracked files
+and pushes a `v` tag. `.github/workflows/publish-mcp-registry.yml` then builds
+the bundle, creates the GitHub release, uploads the bundle, hashes it, and
+publishes `server.json` to the registry. There is no manual bundle build or
+hash step.
 
 ## Per release
 
-1. Bump the version to `X.Y.Z` in every MCP-owned file below and commit to
-   `main`:
+1. Bump the version to `X.Y.Z` in every file below and commit to `main`:
 
-   - `server.json`
+   - `.claude-plugin/plugin.json`, `plugin.json`, `gemini-extension.json`
+   - `server.json` (`version` and the `releases/download/vX.Y.Z/` package URL)
    - `manifest.json`
    - `pyproject.toml`
    - `SERVER_INFO` in `scripts/covera_mcp/server.py`
 
-   The plugin manifests (`plugin.json`, `.claude-plugin/plugin.json`,
-   `gemini-extension.json`) are **not** part of an MCP release. Run the suite
-   first; `test_versions_agree` checks the MCP files match:
+   Run the suite first; `test_versions_agree` checks that all of them match:
 
    ```
    python -m unittest discover -s tests
@@ -38,15 +39,15 @@ build or hash step.
    To find any stragglers:
 
    ```
-   grep -rn 'X\.Y\.Z' server.json manifest.json pyproject.toml \
-     scripts/covera_mcp/server.py
+   grep -rn 'X\.Y\.Z' .claude-plugin/plugin.json plugin.json gemini-extension.json \
+     server.json manifest.json pyproject.toml scripts/covera_mcp/server.py
    ```
 
 2. Tag that commit and push the tag:
 
    ```
-   git tag mcp-vX.Y.Z
-   git push origin mcp-vX.Y.Z
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
    ```
 
 3. Watch the workflow and confirm the registry entry:
@@ -56,16 +57,22 @@ build or hash step.
    curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.SuresoftTechnologies"
    ```
 
-That is the whole release. The tag's version (`mcp-vX.Y.Z` -> `X.Y.Z`) must
-match the tracked files or the workflow stops at its first step.
+4. Update the `claude-directory` branch from the tagged commit, keeping the same
+   version and putting `Source-main: <sha>` and
+   `Distribution: claude-directory; do not merge into main.` in its commit
+   message.
+
+That is the whole release. The tag's version (`vX.Y.Z` -> `X.Y.Z`) must match
+the tracked files or the workflow stops at its first step.
 
 ## What the workflow does
 
-On a pushed `mcp-v*` tag (or `workflow_dispatch` with a tag):
+On a pushed `v*` tag (or `workflow_dispatch` with a tag):
 
 1. **Version guard** - the tag must equal the version in `server.json`, and
-   `manifest.json`, `pyproject.toml` and `SERVER_INFO` must all agree. A
-   mismatch fails here, before anything is published.
+   `manifest.json`, the three plugin manifests, `pyproject.toml` and
+   `SERVER_INFO` must all agree. A mismatch fails here, before anything is
+   published.
 2. **Pack** - `mcpb pack` builds `covera-mcp.mcpb`. The name contains `mcp`
    because the registry requires the package URL to. `.mcpbignore` decides the
    contents (see below).

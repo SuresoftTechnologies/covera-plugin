@@ -3,7 +3,7 @@
   "name": "io.github.SuresoftTechnologies/covera-mcp",
   "title": "COVERA COVER coverage tools",
   "description": "Drive Suresoft COVER EE from a coding agent: coverage builds, coverage lookup, toolchain recovery.",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "repository": {
     "url": "https://github.com/SuresoftTechnologies/covera-plugin",
     "source": "github"
@@ -11,7 +11,7 @@
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/SuresoftTechnologies/covera-plugin/releases/download/mcp-v0.1.0/covera-mcp.mcpb",
+      "identifier": "https://github.com/SuresoftTechnologies/covera-plugin/releases/download/v0.1.2/covera-mcp.mcpb",
       "fileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "transport": {
         "type": "stdio"

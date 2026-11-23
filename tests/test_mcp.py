@@ -450,6 +450,16 @@ class VersionTests(unittest.TestCase):
         pyproject = (ROOT / "pyproject.toml").read_text("utf-8")
         m = re.search(r'version\s*=\s*"([^"]+)"', pyproject)
         self.assertEqual(m.group(1), version)
+        # The plugin and the MCP server share one version (one vX.Y.Z tag).
+        for name in ("plugin.json", ".claude-plugin/plugin.json", "gemini-extension.json"):
+            plugin = json.loads((ROOT / name).read_text("utf-8"))
+            self.assertEqual(plugin["version"], version, name)
+
+    def test_package_url_uses_the_version_tag(self):
+        server_json = json.loads((ROOT / "server.json").read_text("utf-8"))
+        tag = "v" + server_json["version"]
+        self.assertIn(f"/releases/download/{tag}/covera-mcp.mcpb",
+                      server_json["packages"][0]["identifier"])
 
     def test_registry_name_and_package(self):
         server_json = json.loads((ROOT / "server.json").read_text("utf-8"))

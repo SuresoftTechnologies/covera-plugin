@@ -1,6 +1,6 @@
 [project]
 name = "covera-mcp"
-version = "0.1.0"
+version = "0.1.2"
 description = "MCP server exposing Suresoft COVER EE coverage-build, measurement, and toolchain-recovery tools"
 requires-python = ">=3.11"
 # No third-party dependencies on purpose: the server speaks JSON-RPC over stdio
