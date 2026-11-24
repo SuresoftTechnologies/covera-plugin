@@ -2,15 +2,16 @@
 
 로컬 ZIP·폴더는 보존 복사본에서 진단한다. tmpa 실행은 서버 API에서만 수행한다. 로컬 자료만 제공한 case에는 서버 Issue 출처가 없으므로 검증 전에 `start`/`collect`로 서버에서 새 case를 수집해야 한다.
 
-Python 3.11 이상과 표준 라이브러리만 사용한다. 아래 경로와 소스 이름은 사용 환경에 맞게 바꾼다. `--source`는 DB의 원래 `SourceFile.path` 값이다. 상대 소스명을 사용하면 `--project-root`에 실제 빌드 작업 폴더를 지정한다.
+Agent Kit에 포함된 Python(`KIT_PYTHON`, 3.11 이상)과 표준 라이브러리만 사용한다. 아래 경로와 소스 이름은 사용 환경에 맞게 바꾼다. `--source`는 DB의 원래 `SourceFile.path` 값이다. 상대 소스명을 사용하면 `--project-root`에 실제 빌드 작업 폴더를 지정한다.
 
 ZIP·폴더가 없으면 [오류 자료 탐색](artifact-discovery.md)을 따른다. `start`의 `--artifacts`를 생략하면 소스 전체 경로와 HardwareID로 서버에서 최신 오류를 찾는다. 자동 발견 자료는 서버 확인을 대신하지 않으며 응답에 없는 Issue ID를 추측하지 않는다.
 
 ## 1. 오류 자료 확인
 
 ```powershell
-$skill = '<cover-toolchain-recovery 스킬 폴더의 절대 경로>'
-python "$skill\scripts\cover_recovery.py" start `
+$python = '<KIT_PYTHON 절대 경로>'
+$skill = '<KIT_SKILL_ROOT 절대 경로>'
+& $python "$skill\scripts\cover_recovery.py" start `
   --artifacts 'D:\cases\error.zip' `
   --source 'C:\build\src\main.cpp' `
   --run-dir 'D:\cases\runs\case-001'
@@ -66,7 +67,7 @@ UTF-8 BOM, UTF-16 LE/BE BOM, CP949와 기존 개행을 보존한다. BOM이 없�
 [서버 TMPA 실행 계약](server-execution.md)을 따른다. 서버 수집 case와 환경변수의 Access key가 필요하다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" verify --case <case.json> --candidate <후보.json>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" verify --case <case.json> --candidate <후보.json>
 ```
 
 각 시도는 `attempts/<번호>/`에 원본과 분리해 준비한다. `proposed.conf`는 서버에 보낼 설정이며 `workspace/`는 변경 비교·입력 보존용 복사본이다. DB·INI·소스·로그는 바이트 그대로 복사하고 후보 `.conf`만 수정한다. 경로 치환과 tmpa 실행은 서버가 맡는다. `proposal.diff`는 설정 변경, `workspace/verification.json`은 입력·컴파일러·TU(분석 소스 단위) 기록이다. 서버가 실행할 이슈의 실제 범위는 서버 API가 결정한다.
@@ -76,7 +77,7 @@ python "${SKILL_ROOT}/scripts/cover_recovery.py" verify --case <case.json> --can
 ## 4. 결과 읽기
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" inspect --case <case.json>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" inspect --case <case.json>
 ```
 
 `Recovered`는 서버의 SUCCEEDED 응답을 확인했다는 뜻이다. 클라이언트에서 새 계측 파일·DB 전환을 관측한 결과가 아니다. 실패 시 `error-artifacts/`의 이번 로그로 진단을 갱신하고 원본 설정 기준의 새 후보를 작성한다.

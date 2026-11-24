@@ -7,7 +7,7 @@
 [서버 API 계약](server-api.md)을 읽는다. 본문은 PA 검증을 통과한 배포용 설정을 사용하며 기존 서버 본문은 조회·비교하지 않는다. 서버에서는 연결 대상과 툴체인의 식별·표시 정보를 확인한다. 입력은 `case.json`, 메인 서버 환경변수, HardwareID 파일, 실제 빌드 명령에서 찾는다. Wrapper는 서버에 등록된 정확한 이름을 쓴다. 실행 경로와 `wrapperName`이 다르면 조회로 대응을 확인하고 하나로 정해지지 않으면 중단한다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" publish-plan --case <case.json> --server <HTTPS서버URL> --hardware-id <HardwareID> --wrapper <등록된Wrapper이름>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" publish-plan --case <case.json> --server <HTTPS서버URL> --hardware-id <HardwareID> --wrapper <등록된Wrapper이름>
 ```
 
 `publish-plan`은 현재 서버와 PA 검증 설정을 비교해 `publish-plan.json`과 `rollback.json`을 기록한다. 서버 쓰기는 없다. 계획에는 다음이 고정된다.
@@ -23,7 +23,7 @@ GCC는 검증된 `gnu_version`에서 표시 버전을 맞춘다. 예를 들어 `
 서버 URL, HardwareID/Agent, Wrapper, 기존·새 툴체인 이름·버전과 설정 diff가 검증된 계획과 일치하면 바로 진행한다. 변경 내용은 진행 상황으로 알리고 사용자 승인을 기다리지 않는다. 스킬 코드·문서만 수정하는 작업에서는 실제 서버를 변경하지 않는다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" publish --case <case.json> --server <HTTPS서버URL> --plan-digest <생성한계획의digest>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" publish --case <case.json> --server <HTTPS서버URL> --plan-digest <생성한계획의digest>
 ```
 
 - 별도 승인 옵션 없이 실행한다. Access key를 읽기 전에 PA 검증 상태, 계획 digest와 대상 서버를 확인한다.

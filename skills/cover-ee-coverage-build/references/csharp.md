@@ -8,7 +8,7 @@
 ## 1. 환경과 대상 확정
 
 1. `CODESCROLL_TM_SERVER_URL`, `CODESCROLL_TM_INSTALL_PATH`, 프로젝트 절대 경로를 공통 시작 조건으로 확인한다. 최초 요청에 Access Key가 없으면 채팅으로 먼저 받고 메모리에만 보관하되, C# 원본 빌드가 끝난 뒤 Agent·COVER 서버 작업 직전에만 사용한다.
-2. `${SKILL_ROOT}/scripts/project_discovery.py managed --project-root <경로>`의 `csharp` 증거와 `.sln`, `.slnx`, `.csproj`, 고객 빌드 스크립트, CI 파일을 읽어 실제 빌드 진입점을 고른다.
+2. `${KIT_SKILL_ROOT}/scripts/project_discovery.py managed --project-root <경로>`의 `csharp` 증거와 `.sln`, `.slnx`, `.csproj`, 고객 빌드 스크립트, CI 파일을 읽어 실제 빌드 진입점을 고른다.
 3. `.sln`에 `.vcxproj`가 섞였거나 후보 솔루션·구성·플랫폼이 여러 개면 모델이 프로젝트 관계를 판단한다. 모델도 선택할 수 없을 때만 사용자에게 실제 빌드 진입점과 `Configuration|Platform`을 요청한다.
 4. 고객의 원본 빌드 명령, 작업 디렉터리, 환경 초기화, 산출물을 정해진 항목으로 나누어 작업별 계획에 기록한다. 임의로 `dotnet build`와 `MSBuild.exe`를 바꾸지 않는다.
 

@@ -1,8 +1,8 @@
 # Privacy Policy — Suresoft COVER plugin (covera)
 
-This policy covers the `covera` plugin: its skills and the Python scripts they run. It does not cover COVER EE or its Local Agent, which are separate Suresoft Technologies products with their own terms and data handling.
+This policy covers the `covera` Skills in this Claude directory distribution and the COVERA Agent Kit scripts they run. The Skills contain no executable code; the scripts and their Python runtime ship with the COVER EE Local Agent in `<CODESCROLL_TM_INSTALL_PATH>/agent_kit`, and their source is in the [full source repository](https://github.com/SuresoftTechnologies/covera-plugin/tree/main). The optional MCP server is distributed separately in that repository and is not part of this distribution. This policy does not cover COVER EE or its Local Agent, which are separate Suresoft Technologies products with their own terms and data handling.
 
-**Last updated:** 2026-11-10
+**Last updated:** 2026-11-24
 
 ## What is collected
 

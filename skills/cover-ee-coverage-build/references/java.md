@@ -8,7 +8,7 @@
 ## 1. 환경과 빌드 방식 확정
 
 1. `CODESCROLL_TM_SERVER_URL`, `CODESCROLL_TM_INSTALL_PATH`, 프로젝트 절대 경로를 공통 시작 조건으로 확인한다. 최초 요청에 Access Key가 없으면 채팅으로 먼저 받고 메모리에만 보관하되, Java 원본 빌드가 끝난 뒤 첫 COVER 서버 작업 직전에만 사용한다.
-2. `${SKILL_ROOT}/scripts/project_discovery.py managed --project-root <경로>`의 Java 증거와 고객 스크립트·CI를 읽고 다음 중 실제 진입점을 선택한다. `buildSystemCandidates`는 파일 기반 후보이고 `confirmedBuildSystems`는 수집기가 제한된 고객 빌드/CI 진입 파일에서 실제 실행 토큰을 찾은 결과다.
+2. `${KIT_SKILL_ROOT}/scripts/project_discovery.py managed --project-root <경로>`의 Java 증거와 고객 스크립트·CI를 읽고 다음 중 실제 진입점을 선택한다. `buildSystemCandidates`는 파일 기반 후보이고 `confirmedBuildSystems`는 수집기가 제한된 고객 빌드/CI 진입 파일에서 실제 실행 토큰을 찾은 결과다.
    - Maven 후보: 선택 프로젝트의 `pom.xml`, `mvnw`, `mvnw.cmd`
    - Maven 확인: 고객 빌드 스크립트, CI, 기존 빌드 로그 또는 사용자 원본 명령에서 `mvn`, `mvnw`, `mvnw.cmd` 호출이 확인되고 해당 명령의 goal, 프로필, 모듈, `-f` 대상, 작업 디렉터리를 수집한 경우
    - Gradle 후보: `build.gradle[.kts]`, `settings.gradle[.kts]`, `gradlew`, `gradlew.bat`
@@ -77,7 +77,7 @@ Gradle 원본 빌드에는 작업별 `observe-gradle.init`을 추가한다. 이 
 
 설치된 `${CODESCROLL_TM_INSTALL_PATH}/bin`의 실제 파일을 열거하고 현재 JDK/소스 호환 수준에 맞는 도구를 선택한다. 이름을 추측하거나 존재하지 않는 버전을 만들지 않는다.
 
-실행기는 `${SKILL_ROOT}/scripts/managed_tools.py`의 설치 조사를 호출한다. 별도 진단이 필요하면 `managed_tools.py jacov --install-root <CODESCROLL_TM_INSTALL_PATH> --output <작업 경로>/jacov-install-evidence.json`을 사용한다. 수집기는 설치 파일의 존재·크기·SHA-256, Maven 플러그인 JAR 내부 좌표·내장 POM 경로, Gradle 플러그인 등록 정보와 진입 클래스의 최소 Java 버전을 기록한다. 수집기 자체는 도구를 선택하지 않으므로 `selection=MODEL_REQUIRED`를 유지한다.
+실행기는 `${KIT_SKILL_ROOT}/scripts/managed_tools.py`의 설치 조사를 호출한다. 별도 진단이 필요하면 `managed_tools.py jacov --install-root <CODESCROLL_TM_INSTALL_PATH> --output <작업 경로>/jacov-install-evidence.json`을 사용한다. 수집기는 설치 파일의 존재·크기·SHA-256, Maven 플러그인 JAR 내부 좌표·내장 POM 경로, Gradle 플러그인 등록 정보와 진입 클래스의 최소 Java 버전을 기록한다. 수집기 자체는 도구를 선택하지 않으므로 `selection=MODEL_REQUIRED`를 유지한다.
 
 Java 파이프라인은 실제 원본 빌드의 Java 버전과 설치 정보를 함께 판단한다. 같은 JRE 변형의 후보가 하나이고, Maven은 플러그인 메타데이터가 확인되거나 Gradle은 진입 클래스의 최소 Java 버전이 맞으면 자동 선택한다. 파일명만 확인한 후보나 호환 후보가 여러 개인 경우에는 모델이 설치본과 소스 호환 수준을 확인한다. `selection=MODEL_REQUIRED`라는 수집 결과만 보고 매번 같은 JAR 선택을 다시 요청하지 않는다. 명시적으로 선택한 도구도 확인된 최소 Java 버전이 실제 JDK보다 높으면 `JACOV_JDK_INCOMPATIBLE`로 중단한다.
 

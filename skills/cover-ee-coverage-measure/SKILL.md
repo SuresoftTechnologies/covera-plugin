@@ -5,13 +5,28 @@ user-invocable: true
 disable-model-invocation: false
 ---
 
-## 설치 경로와 호스트 연결
+## 설치 경로와 실행 런타임
 
-PLUGIN_ROOT는 이 진입점이 속한 설치 플러그인 루트다. skills/<id>/SKILL.md에서는 ../..이다. 공용 scripts/assets/data는 플러그인 루트에 한 번만 배치한다. 스킬의 references와 보조 문서는 해당 스킬 파일 기준이다.
+이 스킬 패키지에는 실행 코드가 없다. 실행 코드와 Python 런타임은 COVER EE Local Agent에 포함된 COVERA Agent Kit(`agent_kit`)에 있고, 이 스킬은 그 코드를 실행하도록 안내한다. 이 문서와 `references/`의 링크는 지금 읽은 SKILL.md의 부모 디렉터리(SKILL_ROOT) 기준이다.
 
-`${PLUGIN_ROOT}`와 `${PLUGIN_DATA}`가 셸에 자동 설정됐다고 가정하지 않는다. 로드한 파일의 실제 위치로 루트를 확인하고, 실행할 때 실제 절대경로로 대체하거나 동일 셸 호출에서 변수를 설정한다. PLUGIN_DATA는 호스트가 제공하는 영속 데이터 경로를 우선 사용하고, 없으면 사용자 데이터 디렉터리 아래 이 플러그인 전용 경로를 사용한다. 사용자의 분석 대상 작업 디렉터리는 바꾸지 않는다. bash 예제는 bash에서 실행한다.
+첫 실행 전에 아래 값을 한 번 확인하고 같은 대화에서 재사용한다. `${...}` 표기는 설명용이며 자동 설정된 환경변수가 아니다. 실행할 때 실제 절대경로로 바꾸고 따옴표로 감싼다.
 
-SKILL_ROOT는 지금 읽은 SKILL.md의 부모 디렉터리다. 이 스킬 전용 scripts/assets는 SKILL_ROOT 아래에 있다. `${SKILL_ROOT}`는 설명용 표기이며 자동 설정된 환경변수가 아니다. 스크립트 실행 시 로드한 SKILL.md의 실제 위치로 절대경로를 구성한다. 프로젝트 작업 디렉터리를 스킬 폴더로 바꾸지 않는다.
+- `INSTALL_PATH`: 환경 변수 `CODESCROLL_TM_INSTALL_PATH`의 값이다. 값이 없거나 아래 확인에 실패하면 Local Agent 설치 폴더 경로를 사용자에게 요청하고 입력을 기다린다. 다른 위치를 추측해 탐색하지 않고 환경변수를 수정하지 않는다.
+- `KIT_PYTHON`: Agent Kit에 포함된 Python이다. Windows는 `${INSTALL_PATH}/agent_kit/python/python.exe`, Linux는 `${INSTALL_PATH}/agent_kit/python/bin/python3`이다. 시스템 Python이나 PATH의 Python을 쓰지 않는다.
+- `KIT_SKILL_ROOT`: `${INSTALL_PATH}/agent_kit/plugins/skills/cover-ee-coverage-measure`이다. 이 스킬의 스크립트(`scripts/`)와 실행 중에 읽는 데이터 파일이 여기에 있다.
+
+`KIT_PYTHON`과 `${KIT_SKILL_ROOT}/scripts/measure.py`가 모두 있어야 진행한다.
+- 조회 스크립트는 같은 Agent Kit의 빌드 스킬 코드를 함께 쓰므로 `${INSTALL_PATH}/agent_kit/plugins/skills/cover-ee-coverage-build/scripts/`도 있어야 한다.
+하나라도 없으면 프로젝트 조사·빌드·서버 연결을 시작하지 말고 아래 안내를 보여준 뒤 멈춘다. 실행 코드를 다른 곳에서 내려받거나 직접 작성해 대신하지 않는다.
+
+```text
+[설치 확인]
+• 확인한 Local Agent 경로: {INSTALL_PATH 또는 "설정되지 않음"}
+• 필요: COVERA Agent Kit(agent_kit)이 포함된 COVER EE Local Agent 4.9(4 Service Pack 9) 이상
+• 제품 설치·지원: bizcenter@suresofttech.com
+```
+
+사용자의 분석 대상 작업 디렉터리는 바꾸지 않는다. bash 예제는 bash에서 실행한다.
 
 # COVER EE 커버리지 측정 정보 조회
 
@@ -23,7 +38,7 @@ SKILL_ROOT는 지금 읽은 SKILL.md의 부모 디렉터리다. 이 스킬 전�
 
 ## 실행 위치와 인증
 
-`SKILL_ROOT`는 이 파일의 부모 디렉터리다. 진입점은 `scripts/measure.py`이며, 같은 플러그인의 빌드 스킬에 있는 인증 정보 읽기와 curl 통신 함수를 재사용한다. 별도 빌드 job이나 Local Agent 기동은 필요하지 않다. 다른 플러그인 설치도 필요하지 않다.
+진입점은 Agent Kit의 `${KIT_SKILL_ROOT}/scripts/measure.py`이며, 같은 Agent Kit에 있는 빌드 스킬의 인증 정보 읽기와 curl 통신 함수를 재사용한다. 별도 빌드 job이나 Local Agent 기동은 필요하지 않다. 다른 플러그인 설치도 필요하지 않다.
 
 - COVER 메인 웹 서버 URL과 Access Key를 사용한다. `CODESCROLL_TM_SERVER_URL`은 Agent용 주소이므로 조회 서버 주소로 사용하지 않는다.
 - 기본적으로 `CODESCROLL_TM_INSTALL_PATH/agent_kit/open-api-credentials.json`의 URL·키를 한 쌍으로 읽는다. 별도 서버 주소를 받으면 캐시 주소와 같은 경우에만 키를 재사용한다.
@@ -40,8 +55,8 @@ SKILL_ROOT는 지금 읽은 SKILL.md의 부모 디렉터리다. 이 스킬 전�
 실행 예시에서 경로는 설치 위치의 절대 경로로 바꾼다.
 
 ```text
-python <SKILL_ROOT>/scripts/measure.py --module-name <모듈파일명>
-python <SKILL_ROOT>/scripts/measure.py --server-url <HTTPS메인서버> --module-id <빌드모듈ID> --details
+"<KIT_PYTHON>" "<KIT_SKILL_ROOT>/scripts/measure.py" --module-name <모듈파일명>
+"<KIT_PYTHON>" "<KIT_SKILL_ROOT>/scripts/measure.py" --server-url <HTTPS메인서버> --module-id <빌드모듈ID> --details
 ```
 
 전체 상세 결과는 클 수 있다. `--output <작업용JSON절대경로>`를 지정하면 검증이 끝난 결과만 새 파일에 저장하고 채팅 도구 출력에는 요약만 반환한다. 기존 파일은 덮어쓰지 않는다. 프로젝트 빌드 폴더에 증거 파일을 만들 필요는 없다.

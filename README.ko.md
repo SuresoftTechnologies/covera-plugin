@@ -26,6 +26,12 @@ COVERA가 COVER의 결과를 대신하지는 않습니다. 계측과 측정을 �
 
 이 저장소의 스킬은 설치된 COVER EE Local Agent와 함께 동작하며, COVER를 대신하지 않습니다.
 
+## Claude 디렉터리 배포본
+
+이 Claude 디렉터리 배포본에는 COVERA 스킬만 들어 있습니다. 스킬이 실행하는 스크립트, Python 런타임, 선택 사항인 MCP 서버는 포함하지 않습니다. 스킬은 COVER EE Local Agent에 함께 설치되는 COVERA Agent Kit(`agent_kit`)을 실행합니다. 스크립트는 `agent_kit/plugins/skills/`에, Python은 `agent_kit/python/`에 있습니다. 따라서 제품 기능을 쓰려면 Agent Kit이 포함된 COVER EE Local Agent 4.9(4 Service Pack 9) 이상이 필요합니다.
+
+스크립트와 MCP 서버는 [전체 소스 저장소](https://github.com/SuresoftTechnologies/covera-plugin/tree/main)에서도 볼 수 있습니다.
+
 ## 설치
 
 claude.ai의 Anthropic 플러그인 디렉터리(**Customize > Plugins**)에서 COVERA를 추가합니다. 추가한 플러그인은 계정 동기화를 통해 Claude Code에서도 사용할 수 있습니다. 설치하지 않고 로컬 사본으로 써 보려면, 저장소를 받은 폴더의 상위 폴더에서 다음 명령을 실행합니다. 이 경우 플러그인은 해당 세션에서만 로드됩니다.
@@ -34,7 +40,7 @@ claude.ai의 Anthropic 플러그인 디렉터리(**Customize > Plugins**)에서 
 claude --plugin-dir ./covera-plugin
 ```
 
-COVERA의 스크립트는 사용자 PC에서 실행되며, 그 PC에 설치된 COVER EE Local Agent와 빌드 도구를 사용합니다. COVER가 설치되어 있지 않거나 설정이 빠져 있으면 스킬은 설정 확인 단계에서 멈추고 무엇이 빠졌는지 알려 줍니다.
+스킬은 Agent Kit의 스크립트를 Agent Kit에 포함된 Python으로 사용자 PC에서 실행하며, 그 PC의 COVER EE Local Agent와 빌드 도구를 사용합니다. Local Agent 위치는 `CODESCROLL_TM_INSTALL_PATH`에서 찾습니다. Agent Kit이 없거나 설정이 빠져 있으면 스킬은 설치 확인 단계에서 멈추고 무엇이 빠졌는지 알려 줍니다.
 
 ## 요청 예시
 
@@ -58,33 +64,13 @@ COVERA의 스크립트는 사용자 PC에서 실행되며, 그 PC에 설치된 C
 | `cover-ee-coverage-measure` | COVER 서버에 저장된 모듈의 최신 누적 커버리지를 읽기 전용으로 조회하고, 요청하면 파일·함수별 결과를 보여 줍니다. 테스트 실행, 새 데이터 수집, 빌드는 하지 않습니다. COVER 서버 URL과 Access Key만 있으면 됩니다. |
 | `cover-toolchain-recovery` | 분석 오류로 빠진 C/C++ 파일을 복구합니다. COVER 서버에서 오류 자료를 확보해 원인을 진단하고, 최소한의 파서 설정 수정안을 서버에서 COVER PA(`tmpa`)를 실행해 검증합니다. 검증에 성공하면 서버에 새 툴체인을 등록하고 wrapper를 연결한 뒤 재빌드를 인계합니다. 진단만 요청하면 진단에서 멈춥니다. |
 
-## MCP 서버
+## 선택 사항: MCP 서버
 
-COVERA는 같은 세 스킬을 어떤 MCP 클라이언트(Claude Desktop, Cursor, VS Code 등)에서도 쓸 수 있도록 MCP 서버도 함께 제공합니다. 스킬을 로드하지 않는 클라이언트도 전체 흐름(커버리지 빌드, 모듈 커버리지 조회, 툴체인 오류 복구)을 그대로 사용할 수 있습니다. 각 스킬이 따르는 절차는 도구(`covera_get_guide`)로 돌려주므로, 스킬이 없는 클라이언트도 같은 지침을 따라 작업할 수 있습니다.
-
-공식 MCP 레지스트리에 `io.github.SuresoftTechnologies/covera-mcp`로 등재되어 있으며, 플러그인과 같은 버전을 쓰며, `vX.Y.Z` 릴리스 하나로 둘을 함께 배포합니다.
-
-실행 방법은 세 가지입니다.
-
-- **플러그인과 함께.** COVERA를 설치하면 서버가 자동으로 등록되어(`.mcp.json`), Claude Code에서 스킬과 함께 도구를 바로 쓸 수 있습니다.
-- **번들로.** 이 저장소의 릴리스에서 `covera-mcp.mcpb`를 내려받아 MCP 번들을 설치하는 클라이언트로 엽니다. 자체적으로 Python을 준비하므로 먼저 설치할 것이 없습니다.
-- **인터프리터를 직접 지정.** `scripts/mcp_server.py`를 Python 3.11 이상으로 실행합니다. 런처 `scripts/covera-mcp.cmd`가 Windows와 Linux에서 동작하는 인터프리터를 고릅니다.
-
-도구는 스킬에 대응합니다.
-
-| 구분 | 도구 |
-|---|---|
-| 읽기 전용 | `covera_doctor`, `covera_coverage_measure`, `covera_recovery_discover`, `covera_recovery_inspect`, `covera_get_guide` |
-| 커버리지 빌드 | `covera_coverage_build` (계획 후 실행) |
-| 툴체인 복구 | `covera_recovery_start`, `_collect`, `_verify`, `_publish_plan`, `_publish` |
-
-`coverage-build`, `coverage-measure`, `toolchain-recovery` 세 프롬프트가 안내 흐름을 시작합니다. `execute`를 포함한 커버리지 빌드와 복구 반영(`covera_recovery_publish`)은 프로젝트의 빌드 설정이나 공용 COVER 서버를 바꾸므로, 동의 힌트를 달아 매번 승인을 받고, 실행 전 `covera_get_guide`를 먼저 읽습니다. COVER EE Local Agent가 없어도 서버는 뜨고 `covera_doctor`가 무엇이 빠졌는지 알려 주므로, 어느 PC에 설정해 두어도 안전합니다.
-
-번들은 Local Agent 경로를 `CODESCROLL_TM_INSTALL_PATH`에서 찾습니다. 이 값은 Local Agent 설치 시 환경에 설정되며, 서버는 그 환경변수를 읽고 없으면 `covera_doctor`가 알려 줍니다. Open API Access Key는 도구 인자로 받지도, 출력하지도 않습니다. 빌드 흐름은 Local Agent의 캐시 자격 증명이나 `COVER_ACCESS_KEY`에서 읽고, 복구 흐름은 `COVER_ACCESS_KEY`(또는 요청 서버가 캐시된 서버와 일치할 때 캐시 키)에서 읽습니다.
+COVERA MCP 서버는 이 Claude 디렉터리 배포본과 별도로 배포되며, 함께 설치되지 않습니다. 스킬을 로드하지 않는 MCP 클라이언트에서도 같은 작업 흐름을 쓸 수 있게 해 주며, 공식 MCP 레지스트리에 `io.github.SuresoftTechnologies/covera-mcp`로 등재되어 있습니다. 설정 방법은 [전체 저장소의 MCP 안내](https://github.com/SuresoftTechnologies/covera-plugin/blob/main/README.ko.md#mcp-서버)를 참고하세요. MCP 서버도 COVER EE Local Agent가 필요합니다.
 
 ## COVER 연동 방식
 
-COVERA는 COVER EE Local Agent가 설치된 환경에서 사용합니다. 이 저장소에는 스킬과 스킬이 실행하는 스크립트가 들어 있으며, COVER 자체는 포함되어 있지 않습니다. COVER 없이 계측이나 측정이 수행됐다고 보고하지 않습니다.
+COVERA는 COVERA Agent Kit이 포함된 COVER EE Local Agent가 설치된 환경에서 사용합니다. 이 Claude 디렉터리 배포본에는 스킬이 들어 있고, 스킬이 실행하는 스크립트와 Python 런타임은 Local Agent의 Agent Kit에 포함되어 있습니다. COVER 자체는 포함되어 있지 않으며, COVER 없이 계측이나 측정이 수행됐다고 보고하지 않습니다.
 
 작업 중 사용자 PC에서 바뀌는 것은 다음과 같습니다.
 
@@ -94,9 +80,9 @@ COVERA는 COVER EE Local Agent가 설치된 환경에서 사용합니다. 이 �
 
 ## 요구 사항
 
-- COVER EE Local Agent 설치 및 라이선스. `CODESCROLL_TM_INSTALL_PATH`가 설치 경로를, `CODESCROLL_TM_SERVER_URL`이 remote service 주소를 가리켜야 합니다.
+- COVERA Agent Kit(`agent_kit/python/`, `agent_kit/plugins/skills/`)이 포함된 COVER EE Local Agent 4.9(4 Service Pack 9) 이상 설치 및 라이선스. `CODESCROLL_TM_INSTALL_PATH`가 설치 경로를, `CODESCROLL_TM_SERVER_URL`이 remote service 주소를 가리켜야 합니다.
 - COVER Access Key와 COVER Open API 메인 웹 서버 URL(HTTPS). 커버리지 조회와 툴체인 복구에는 AI Agent Kit API(`/cover-open-api/ai-agent-kit/...`)를 제공하는 COVER 서버가 필요합니다. 툴체인 복구는 Access Key를 `COVER_ACCESS_KEY` 환경변수에서 읽습니다.
-- `PATH`에서 실행할 수 있는 Python 3.11 이상과 curl
+- `PATH`에서 실행할 수 있는 curl (Python은 Agent Kit에 포함되어 있습니다)
 - 프로젝트의 빌드 도구: CMake/Make와 GCC, Visual Studio/MSBuild, STM32CubeIDE, .NET 툴체인, 또는 Java와 Maven/Gradle
 - Windows 또는 Linux. Local Agent가 Windows에 설치되어 있으면 WSL에서도 사용할 수 있습니다.
 
@@ -104,9 +90,9 @@ COVERA는 COVER EE Local Agent가 설치된 환경에서 사용합니다. 이 �
 
 ## 개인정보 처리방침
 
-COVERA의 스크립트는 사용자 PC에서 실행됩니다.
+스킬은 지시문이며, 스킬이 실행하는 코드는 사용자 PC에서 실행되는 Agent Kit의 스크립트입니다.
 
-- Suresoft Technologies로 어떤 데이터도 보내지 않으며, 텔레메트리도 수집하지 않습니다. MCP 서버도 자체 텔레메트리가 없으며, 각 호출을 로컬 스킬 런타임으로 전달할 뿐 자체 네트워크 호출을 하지 않습니다.
+- Suresoft Technologies로 어떤 데이터도 보내지 않으며, 텔레메트리도 수집하지 않습니다.
 - 사용자가 알려 준 COVER 서버에만 Access Key로 접속하며, 필요하면 서버에 이 PC의 Local Agent와 툴체인을 등록합니다. 툴체인 복구는 서버가 PA를 실행할 수 있도록 소스 경로, 이 PC의 MAC 주소, 컴파일러 ID, 수정한 설정을 서버로 보냅니다. 사내 인증서를 쓰는 환경이 많아 기본적으로 인증서를 검증하지 않습니다. 검증이 필요하면 `--verify-tls`를 지정합니다.
 - 첫 인증에 성공하면 서버 주소와 Access Key를 `<CODESCROLL_TM_INSTALL_PATH>/agent_kit/open-api-credentials.json`에 평문으로 저장해 다음부터 다시 묻지 않습니다. 저장된 값을 쓰지 않으려면 이 파일을 삭제하세요. Access Key는 로그에 남기지 않습니다.
 - Java 프로젝트에서는 `~/cover_jacov.json`이 없으면 새로 만듭니다.
@@ -117,6 +103,6 @@ COVERA의 스크립트는 사용자 PC에서 실행됩니다.
 
 ## 라이선스와 상표
 
-이 저장소는 [MIT 라이선스](LICENSE)로 배포됩니다. 라이선스는 문서, 스킬 파일, 스크립트를 포함한 이 저장소의 모든 내용에 적용되며, COVER EE와 Local Agent에는 적용되지 않습니다. COVER와 COVERA는 Suresoft Technologies의 제품이며, 이 저장소는 어떠한 제품 기능이나 제품 라이선스도 제공하지 않습니다.
+이 저장소는 [MIT 라이선스](LICENSE)로 배포됩니다. 이 Claude 디렉터리 배포본에서는 문서와 스킬 파일에 적용되며, 스크립트는 [전체 소스 저장소](https://github.com/SuresoftTechnologies/covera-plugin/tree/main)에서 같은 라이선스로 공개되어 있습니다. COVER EE와 Local Agent에는 적용되지 않습니다. COVER와 COVERA는 Suresoft Technologies의 제품이며, 이 저장소는 어떠한 제품 기능이나 제품 라이선스도 제공하지 않습니다.
 
 STM32CubeIDE는 STMicroelectronics의 상표입니다. Claude와 Claude Code는 Anthropic의 상표입니다. 그 밖의 제품명은 각 소유자의 상표일 수 있습니다.

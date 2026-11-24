@@ -26,6 +26,12 @@ COVERA does not replace COVER's results. COVER performs the instrumentation and 
 
 The skills in this repository work with a COVER EE Local Agent installation. They are not a replacement for COVER.
 
+## Claude directory package
+
+This Claude directory distribution contains the COVERA Skills only. It does not bundle the scripts the skills run, a Python runtime, or the optional MCP server. The skills run the COVERA Agent Kit (`agent_kit`) that ships with the COVER EE Local Agent: its scripts under `agent_kit/plugins/skills/` and the Python under `agent_kit/python/`. Product-backed actions therefore require COVER EE Local Agent 4.9 (4 Service Pack 9) or later, which includes the Agent Kit.
+
+The [full source repository](https://github.com/SuresoftTechnologies/covera-plugin/tree/main) also contains the scripts and the optional MCP server.
+
 ## Install
 
 Add COVERA from Anthropic's plugin directory on claude.ai (**Customize > Plugins**). It loads in Claude Code through account sync. To try a local copy without installing, load it for one session from the folder that contains your checkout:
@@ -34,7 +40,7 @@ Add COVERA from Anthropic's plugin directory on claude.ai (**Customize > Plugins
 claude --plugin-dir ./covera-plugin
 ```
 
-COVERA's scripts run on your machine against a local COVER EE Local Agent and your build tools. Without COVER, or when its settings are missing, a skill stops at its setup check and says what is missing.
+The skills run the Agent Kit's scripts on your machine, with the Python bundled in the Agent Kit, against your COVER EE Local Agent and build tools. The Local Agent is found through `CODESCROLL_TM_INSTALL_PATH`. Without the Agent Kit, or when its settings are missing, a skill stops at its installation check and says what is missing.
 
 ## Example requests
 
@@ -58,33 +64,13 @@ The coding agent picks the skill from your request; you can also run one directl
 | `cover-ee-coverage-measure` | Read-only lookup of a module's latest cumulative coverage on the COVER server, with per-file and per-function results on request. It does not run tests, collect new data, or build. Needs only the COVER server URL and Access Key. |
 | `cover-toolchain-recovery` | Recover C/C++ files excluded by analysis errors: get the error data from the COVER server, diagnose the cause, and verify a minimal parser configuration fix by running the COVER PA (`tmpa`) on the server. After a successful verification it registers a new toolchain on the server, connects the wrapper, and hands off for a rebuild. If you ask only for a diagnosis, it stops there. |
 
-## MCP server
+## Optional MCP server
 
-COVERA also ships an MCP server that exposes the same three skills to any MCP client — Claude Desktop, Cursor, VS Code, and others — not only to agents that load the skills. A client with no skills still gets the full flow: run a coverage build, look up a module's coverage, and recover a toolchain error. The procedure each skill follows is served back through a tool (`covera_get_guide`), so a skill-less client has the same guidance to work from.
-
-It is listed in the official MCP registry as `io.github.SuresoftTechnologies/covera-mcp`, and shares the plugin's version: each `vX.Y.Z` release publishes both.
-
-Three ways to run it:
-
-- **With the plugin.** Installing COVERA registers the server automatically (`.mcp.json`), so in Claude Code the tools are available alongside the skills.
-- **As a bundle.** Download `covera-mcp.mcpb` from this repository's releases and open it with a client that installs MCP bundles. It resolves its own Python, so nothing has to be installed first.
-- **Point a client at the interpreter.** Run `scripts/mcp_server.py` with Python 3.11 or later. The launcher `scripts/covera-mcp.cmd` picks a working interpreter on Windows and Linux.
-
-The tools mirror the skills:
-
-| Group | Tools |
-|---|---|
-| Read-only | `covera_doctor`, `covera_coverage_measure`, `covera_recovery_discover`, `covera_recovery_inspect`, `covera_get_guide` |
-| Coverage build | `covera_coverage_build` (plan, then execute) |
-| Toolchain recovery | `covera_recovery_start`, `_collect`, `_verify`, `_publish_plan`, `_publish` |
-
-Three prompts, `coverage-build`, `coverage-measure` and `toolchain-recovery`, start the guided flows. A coverage build with `execute`, and applying a recovery (`covera_recovery_publish`), change the project's build setup or the shared COVER server, so they carry consent hints and ask for your approval first; read `covera_get_guide` before driving them. Without a COVER EE Local Agent the server still starts and `covera_doctor` reports what is missing, so it is safe to leave configured on any machine.
-
-The bundle finds the Local Agent through `CODESCROLL_TM_INSTALL_PATH`, which the Local Agent installation sets in your environment; the server reads it from there and `covera_doctor` reports if it is missing. The Open API Access Key is never passed as a tool argument or printed: the build flow reads it from the Local Agent's cached credentials or `COVER_ACCESS_KEY`, and the recovery flow reads `COVER_ACCESS_KEY` (or the cached key when the requested server matches the cached one).
+The COVERA MCP server is distributed separately from this Claude directory package and is not installed with it. It exposes the same workflows to MCP clients that do not load skills, and is listed in the official MCP registry as `io.github.SuresoftTechnologies/covera-mcp`. To set it up, follow the [full repository's MCP instructions](https://github.com/SuresoftTechnologies/covera-plugin/blob/main/README.md#mcp-server). It also requires a COVER EE Local Agent.
 
 ## Product-backed workflow
 
-COVERA is used where a COVER EE Local Agent is installed. This repository contains the skills and the scripts they run. It does not include COVER itself, and it does not report instrumentation or measurement as done without COVER.
+COVERA is used where a COVER EE Local Agent with the COVERA Agent Kit is installed. This Claude directory package contains the skills; the scripts they run and their Python runtime come with the Local Agent's Agent Kit. It does not include COVER itself, and it does not report instrumentation or measurement as done without COVER.
 
 What changes on your machine during the work:
 
@@ -94,9 +80,9 @@ What changes on your machine during the work:
 
 ## Requirements
 
-- COVER EE Local Agent installed and licensed, with `CODESCROLL_TM_INSTALL_PATH` pointing to the installation and `CODESCROLL_TM_SERVER_URL` to its remote service
+- COVER EE Local Agent 4.9 (4 Service Pack 9) or later, installed and licensed, including the COVERA Agent Kit (`agent_kit/python/` and `agent_kit/plugins/skills/`), with `CODESCROLL_TM_INSTALL_PATH` pointing to the installation and `CODESCROLL_TM_SERVER_URL` to its remote service
 - A COVER Access Key and the COVER Open API main web server URL (HTTPS). Coverage lookup and toolchain recovery also need a COVER server that provides the AI Agent Kit API (`/cover-open-api/ai-agent-kit/...`). Toolchain recovery reads the Access Key from the `COVER_ACCESS_KEY` environment variable.
-- Python 3.11 or later and curl on `PATH`
+- curl on `PATH` (Python comes with the Agent Kit)
 - The project's own build tools: CMake/Make and GCC, Visual Studio/MSBuild, STM32CubeIDE, the .NET toolchain, or Java with Maven or Gradle
 - Windows or Linux; WSL is supported when the Local Agent runs on Windows
 
@@ -104,9 +90,9 @@ For a product demo, purchase, or deployment consultation, contact [bizcenter@sur
 
 ## Privacy Policy
 
-COVERA's scripts run on your machine.
+The skills are instructions; the code they run is the Agent Kit's scripts, which run on your machine.
 
-- COVERA sends nothing to Suresoft Technologies and has no telemetry. The MCP server has none of its own either; it forwards each call to the local skill runtime and makes no network call of its own.
+- COVERA sends nothing to Suresoft Technologies and has no telemetry.
 - It connects only to the COVER server you provide, with your Access Key, and registers this machine's Local Agent and its toolchains on the server when needed. Toolchain recovery sends the source path, this machine's MAC address, the compiler ID, and the proposed configuration to the server so the server can run the PA. By default, the certificate is not verified, because COVER servers often use internal certificates. Pass `--verify-tls` to require verification.
 - After the first successful authentication, the server URL and Access Key are saved in plain text to `<CODESCROLL_TM_INSTALL_PATH>/agent_kit/open-api-credentials.json` so you aren't asked again. Delete the file to stop reuse. The Access Key is never written to logs.
 - For Java, `~/cover_jacov.json` is created when missing.
@@ -117,6 +103,6 @@ The full policy is in [PRIVACY.md](PRIVACY.md). For support and questions, conta
 
 ## License and trademarks
 
-This repository is licensed under the [MIT License](LICENSE). The license covers everything in this repository: the documentation, the skill files, and the scripts. It does not cover COVER EE or its Local Agent. COVER and COVERA are Suresoft Technologies products, and no product functionality or product license is granted by this repository.
+This repository is licensed under the [MIT License](LICENSE). In this Claude directory distribution the license covers the documentation and the skill files; the scripts are published under the same license in the [full source repository](https://github.com/SuresoftTechnologies/covera-plugin/tree/main). It does not cover COVER EE or its Local Agent. COVER and COVERA are Suresoft Technologies products, and no product functionality or product license is granted by this repository.
 
 STM32CubeIDE is a trademark of STMicroelectronics. Claude and Claude Code are trademarks of Anthropic. Other product names may be trademarks of their respective owners.

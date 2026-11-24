@@ -40,7 +40,7 @@
 | Maven 로컬 설치 | 설치 명령, 원본 JAR 해시, 저장소 경로와 현재 설치 JAR 해시 |
 | 검증된 Java 계측 빌드 | 계측 명령, 소스 입력, JACOV·설정·init script 해시와 현재 산출물 해시 |
 
-파일의 포함·제외 범위는 [project_index.py](../scripts/project_index.py)의 `SOURCE_SUFFIXES`, `BUILD_NAMES`, `BUILD_SUFFIXES`, `SKIP_DIRS`, `GENERATED_OUTPUT_DIRS`를 따른다. `.cover-build`, `.cover-ee`, `.git`과 생성 산출물 디렉터리를 소스 변경으로 취급하지 않는다. Java 원본 빌드의 환경 해시는 현재 `JAVA_HOME`, `PATH`, `GRADLE_USER_HOME`, `MAVEN_OPTS`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`를 대상으로 한다. 고객 빌드가 별도의 외부 파일이나 다른 환경값에 의존한다면 이 목록만으로 모든 변경이 검출된다고 가정하지 않는다.
+파일의 포함·제외 범위는 `${KIT_SKILL_ROOT}/scripts/project_index.py`의 `SOURCE_SUFFIXES`, `BUILD_NAMES`, `BUILD_SUFFIXES`, `SKIP_DIRS`, `GENERATED_OUTPUT_DIRS`를 따른다. `.cover-build`, `.cover-ee`, `.git`과 생성 산출물 디렉터리를 소스 변경으로 취급하지 않는다. Java 원본 빌드의 환경 해시는 현재 `JAVA_HOME`, `PATH`, `GRADLE_USER_HOME`, `MAVEN_OPTS`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`를 대상으로 한다. 고객 빌드가 별도의 외부 파일이나 다른 환경값에 의존한다면 이 목록만으로 모든 변경이 검출된다고 가정하지 않는다.
 
 Java 커버리지 빌드는 같은 작업을 재개해도 다시 수행한다. 산출물 해시로 이전 커버리지 빌드 성공을 재사용하지 않는다. 원본 빌드 등 다른 단계의 재사용은 해당 단계의 입력 검증 규칙을 따른다.
 

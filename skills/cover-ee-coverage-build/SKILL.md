@@ -5,21 +5,34 @@ user-invocable: true
 disable-model-invocation: false
 ---
 
-## 설치 경로와 호스트 연결
+## 설치 경로와 실행 런타임
 
-PLUGIN_ROOT는 이 진입점이 속한 설치 플러그인 루트다. skills/<id>/SKILL.md에서는 ../..이다. 공용 scripts/assets/data는 플러그인 루트에 한 번만 배치한다. 스킬의 references와 보조 문서는 해당 스킬 파일 기준이다.
+이 스킬 패키지에는 실행 코드가 없다. 실행 코드와 Python 런타임은 COVER EE Local Agent에 포함된 COVERA Agent Kit(`agent_kit`)에 있고, 이 스킬은 그 코드를 실행하도록 안내한다. 이 문서와 `references/`의 링크는 지금 읽은 SKILL.md의 부모 디렉터리(SKILL_ROOT) 기준이다.
 
-`${PLUGIN_ROOT}`와 `${PLUGIN_DATA}`가 셸에 자동 설정됐다고 가정하지 않는다. 로드한 파일의 실제 위치로 루트를 확인하고, 실행할 때 실제 절대경로로 대체하거나 동일 셸 호출에서 변수를 설정한다. PLUGIN_DATA는 호스트가 제공하는 영속 데이터 경로를 우선 사용하고, 없으면 사용자 데이터 디렉터리 아래 이 플러그인 전용 경로를 사용한다. 사용자의 분석 대상 작업 디렉터리는 바꾸지 않는다. bash 예제는 bash에서 실행한다.
+첫 실행 전에 아래 값을 한 번 확인하고 같은 대화에서 재사용한다. `${...}` 표기는 설명용이며 자동 설정된 환경변수가 아니다. 실행할 때 실제 절대경로로 바꾸고 따옴표로 감싼다.
 
-SKILL_ROOT는 지금 읽은 SKILL.md의 부모 디렉터리다. 이 스킬 전용 scripts/assets는 SKILL_ROOT 아래에 있다. `${SKILL_ROOT}`는 설명용 표기이며 자동 설정된 환경변수가 아니다. 스크립트 실행 시 로드한 SKILL.md의 실제 위치로 절대경로를 구성한다. 프로젝트 작업 디렉터리를 스킬 폴더로 바꾸지 않는다.
+- `INSTALL_PATH`: 환경 변수 `CODESCROLL_TM_INSTALL_PATH`의 값이다. 값이 없거나 아래 확인에 실패하면 Local Agent 설치 폴더 경로를 사용자에게 요청하고 입력을 기다린다. 다른 위치를 추측해 탐색하지 않고 환경변수를 수정하지 않는다.
+- `KIT_PYTHON`: Agent Kit에 포함된 Python이다. Windows는 `${INSTALL_PATH}/agent_kit/python/python.exe`, Linux는 `${INSTALL_PATH}/agent_kit/python/bin/python3`이다. 시스템 Python이나 PATH의 Python을 쓰지 않는다.
+- `KIT_SKILL_ROOT`: `${INSTALL_PATH}/agent_kit/plugins/skills/cover-ee-coverage-build`이다. 이 스킬의 스크립트(`scripts/`)와 실행 중에 읽는 데이터 파일이 여기에 있다.
+
+`KIT_PYTHON`과 `${KIT_SKILL_ROOT}/scripts/cover_workflow_runner.py`, `${KIT_SKILL_ROOT}/scripts/cover_auth.py`가 모두 있어야 진행한다.
+하나라도 없으면 프로젝트 조사·빌드·서버 연결을 시작하지 말고 아래 안내를 보여준 뒤 멈춘다. 실행 코드를 다른 곳에서 내려받거나 직접 작성해 대신하지 않는다.
+
+```text
+[설치 확인]
+• 확인한 Local Agent 경로: {INSTALL_PATH 또는 "설정되지 않음"}
+• 필요: COVERA Agent Kit(agent_kit)이 포함된 COVER EE Local Agent 4.9(4 Service Pack 9) 이상
+• 제품 설치·지원: bizcenter@suresofttech.com
+```
+
+사용자의 분석 대상 작업 디렉터리는 바꾸지 않는다. bash 예제는 bash에서 실행한다.
 
 # COVER EE 커버리지 빌드
 
 ## 스킬 파일 경로
 
-이 스킬의 실행 코드와 파서 설정은 같은 디렉터리의 `scripts/`, `assets/`에 있다.
-`${SKILL_ROOT}`는 이 `SKILL.md`가 있는 실제 디렉터리다. 자동 설정되는 환경변수가 아니므로 실행 예제의 경로는 이 파일 위치를 기준으로 절대경로로 바꾼다. 분석 대상 프로젝트의 작업 디렉터리는 바꾸지 않는다.
-주 진입점은 [scripts/cover_workflow_runner.py](scripts/cover_workflow_runner.py), 인증 진입점은 [scripts/cover_auth.py](scripts/cover_auth.py)다.
+이 스킬의 실행 코드와 파서 설정은 Agent Kit의 `${KIT_SKILL_ROOT}/scripts/`, `${KIT_SKILL_ROOT}/assets/`에 있다.
+주 진입점은 `${KIT_SKILL_ROOT}/scripts/cover_workflow_runner.py`, 인증 진입점은 `${KIT_SKILL_ROOT}/scripts/cover_auth.py`이며 모두 `"${KIT_PYTHON}"`으로 실행한다. 분석 대상 프로젝트의 작업 디렉터리는 바꾸지 않는다.
 
 ## 같은 프로젝트의 중복 실행
 
@@ -57,7 +70,7 @@ C/C++, C#, Java의 원본 빌드 방법을 확인하고 COVER 커버리지 빌�
 - “평소 사용하는 원본 빌드 명령이나 스크립트가 있으면 알려주세요. 없다면 프로젝트 파일을 분석해 자동으로 찾겠습니다.”라고 선택적으로 안내한다. 받은 문자열을 그대로 실행하지 말고 구성 항목을 나눈 계획으로 검증한다.
 - Local Agent의 remote-service URL은 환경 변수 `CODESCROLL_TM_SERVER_URL`, Local Agent 경로는 `CODESCROLL_TM_INSTALL_PATH`에서 읽고, 값이 없거나 유효하지 않을 때만 요청한다. 실행기의 `--server-url`은 remote-service 주소이며, 사용자가 입력한 메인 웹 서버 주소는 `--open-api-server-url`로 전달한다. Open API는 이 주소를 정규화한 HTTPS 원점으로 호출하며, remote-service와 같은 host·port일 필요는 없다. 알려진 host나 포트를 순서대로 탐색하지 않는다. Local Agent에는 환경변수에 설정된 scheme·host·port·path를 유지하며, [WSL HTTP loopback 예외](references/security-and-api.md#wsl에서-windows-서버에-연결하는-경우) 외에는 바꾸지 않는다. 환경변수 자체도 수정하지 않는다.
 - Java JACOV 서버 주소는 `cover_jacov.json.url`에서 읽는다. JACOV 주소에는 위 HTTPS 변환을 적용하지 않으며 Open API 서버와 동일한 protocol·host·port도 요구하지 않는다.
-- 프로젝트 조사와 원본 빌드는 인증 없이 수행한다. 최초 대화에서 받은(또는 캐시 파일에서 읽은) COVER Access Key는 현재 대화·인증 프로세스의 메모리에만 보관하고, 원본 빌드 뒤 첫 서버 작업 직전에만 `${SKILL_ROOT}/scripts/cover_auth.py -- <실행기 인자>`의 메모리 전용 인증 세션으로 전달한다. 새 호출에는 이전 인터페이스의 `terminal`과 `--force-login`을 사용하지 않는다. 이 첫 인증이 성공하면 Open API URL과 Access Key를 `${CODESCROLL_TM_INSTALL_PATH}/agent_kit/open-api-credentials.json`에 캐시해 다음 실행부터 재사용한다.
+- 프로젝트 조사와 원본 빌드는 인증 없이 수행한다. 최초 대화에서 받은(또는 캐시 파일에서 읽은) COVER Access Key는 현재 대화·인증 프로세스의 메모리에만 보관하고, 원본 빌드 뒤 첫 서버 작업 직전에만 `"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_auth.py" -- <실행기 인자>`의 메모리 전용 인증 세션으로 전달한다. 새 호출에는 이전 인터페이스의 `terminal`과 `--force-login`을 사용하지 않는다. 이 첫 인증이 성공하면 Open API URL과 Access Key를 `${CODESCROLL_TM_INSTALL_PATH}/agent_kit/open-api-credentials.json`에 캐시해 다음 실행부터 재사용한다.
 - 사용자의 커버리지 빌드 요청은 Open API에는 사용자가 알려준(또는 캐시 파일의) 메인 웹 서버 URL, Java 계측에는 제품이 생성했거나 사용자가 선택한 `cover_jacov.json.url`을 사용하여 해당 작업의 빌드 경로·파일명·도구 정보·계측 분석 정보를 전송하는 것까지 허용한다. 원본 빌드 뒤 서버 연결 계측 단계에서 별도 전송 승인을 다시 묻지 말고 계속 진행한다. 입력으로 정하지 않은 다른 서버로 작업 범위를 확대하지 않는다.
 - Access Key와 Java key를 명령 인수·작업 파일·로그·응답에 남기지 않는다. 예외적으로 Java 설정이 없을 때는 [Java 설정 생성 절차](references/java.md)에 따라 실행 계정 홈의 `cover_jacov.json`에 Java key와 URL만 저장하고, 첫 Open API 인증이 성공했을 때는 위와 같이 `agent_kit/open-api-credentials.json`에 Access Key와 Open API URL만 저장한다. 두 파일 모두 한 번만 생성하며 이후 실행에서 자동으로 덮어쓰지 않는다. 입력을 위한 새 콘솔을 열지 않는다.
 - Open API는 `curl`로 호출한다. 기본 실행에서는 `-k`를 사용하여 인증서 체인과 hostname을 검사하지 않는다. 이 정책은 사용자가 제공한(또는 캐시 파일의) 메인 웹 서버 URL로 생성한 무결성 보호된 작업의 Open API 원점에만 적용한다. 엄격한 검증을 요청받으면 새 작업에 `--verify-tls`를 사용한다.
@@ -157,7 +170,7 @@ CMake·Make에서 새 래퍼 이름이 사용 중이면 비어 있는 `cs2-<원�
 
 ### 기본 순서
 
-1. `${SKILL_ROOT}/scripts/cover_workflow_runner.py --project-root <경로> --open-api-server-url <메인 웹 서버 URL> --execute`로 프로젝트 인덱스, 환경조사, 원본 계획과 상세 로그를 남기는 원본 빌드를 시작한다. `${CODESCROLL_TM_INSTALL_PATH}/agent_kit/open-api-credentials.json`에서 읽은 값을 쓸 때는 `--open-api-server-url`을 생략한다.
+1. `"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_workflow_runner.py" --project-root <경로> --open-api-server-url <메인 웹 서버 URL> --execute`로 프로젝트 인덱스, 환경조사, 원본 계획과 상세 로그를 남기는 원본 빌드를 시작한다. `${CODESCROLL_TM_INSTALL_PATH}/agent_kit/open-api-credentials.json`에서 읽은 값을 쓸 때는 `--open-api-server-url`을 생략한다.
 2. 언어·빌드 시스템·엔트리·구성·타깃 후보는 스크립트가 수집한 파일·설정·로그로 단일 값만 자동 확정한다. 혼합 저장소는 파일 존재만으로 한 언어를 우선하지 않는다. 선택한 빌드 진입점과 타깃 의존 관계를 기준으로 `NATIVE`, `CSHARP`, `JAVA` 중 이번 작업의 처리 대상과 빌드 시스템 하나를 정한다.
 
    여러 실행 계획이 남으면 `WAITING_MODEL`에 제시된 증거의 내용과 관계를 해석하고, 프로젝트 근거로도 정할 수 없을 때만 사용자에게 후보 차이를 제시한다.
@@ -217,7 +230,7 @@ PATH에서 같은 이름의 실행 파일이 발견돼도 실행 근거가 되�
 
 ## 스크립트 역할
 
-모델은 빌드 작업에 `cover_workflow_runner.py`와 `cover_auth.py`를 진입점으로 사용한다. 위 C/C++ 분석 오류 복구로 전환한 동안에는 복구 스킬의 진입점과 절차를 사용하고, 복구 후 빌드 실행기로 돌아온다. 전체 단계는 `cover_build/workflow.py`, 환경별 흐름은 `cover_build/pipelines/`에 있다. 서버 연동, 상태·증거, 저수준 호환 계층의 책임과 확장 규칙은 [references/architecture.md](references/architecture.md)를 따른다.
+모델은 빌드 작업에 `cover_workflow_runner.py`와 `cover_auth.py`를 진입점으로 사용한다. 위 C/C++ 분석 오류 복구로 전환한 동안에는 복구 스킬의 진입점과 절차를 사용하고, 복구 후 빌드 실행기로 돌아온다. 전체 단계는 `${KIT_SKILL_ROOT}/scripts/cover_build/workflow.py`, 환경별 흐름은 `${KIT_SKILL_ROOT}/scripts/cover_build/pipelines/`에 있다. 서버 연동, 상태·증거, 저수준 호환 계층의 책임과 확장 규칙은 [references/architecture.md](references/architecture.md)를 따른다.
 
 정확한 명령과 JSON은 스크립트 구현을 기준으로 하고 MD에는 판정 정책과 반드시 유지할 조건만 유지한다.
 

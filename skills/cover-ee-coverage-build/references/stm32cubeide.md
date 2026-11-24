@@ -54,7 +54,7 @@ stm32cubeidec.exe --launcher.suppressErrors -nosplash
 
 ### ToolChainInfo 파서 본문
 
-STM32CubeIDE 파이프라인의 GNU Arm 컴파일러에 대해서만 [stm32cubeide.conf](../assets/parser-config/stm32cubeide.conf)를 사용한다. 이 파일은 사용자가 지정한 파서 본문이며 UTF-8로 읽어 줄 단위 배열인 `toolChainContent`에 넣는다. 주석과 빈 줄도 보존한다. 파일 내용은 Make 명령이 아니므로 셸에서 실행하지 않는다.
+STM32CubeIDE 파이프라인의 GNU Arm 컴파일러에 대해서만 Agent Kit의 `${KIT_SKILL_ROOT}/assets/parser-config/stm32cubeide.conf`를 사용한다. 이 파일은 사용자가 지정한 파서 본문이며 UTF-8로 읽어 줄 단위 배열인 `toolChainContent`에 넣는다. 주석과 빈 줄도 보존한다. 파일 내용은 Make 명령이 아니므로 셸에서 실행하지 않는다.
 
 `gnu_version=130300`을 비롯한 모든 설정은 그대로 사용한다. 실제 컴파일러 버전이 다르다는 이유로 파서 값을 자동 변경하거나 Linux GCC 설정을 덧붙이지 않는다. ToolChainInfo의 `majorVersion`·`minorVersion`은 원본 빌드에서 확인한 컴파일러 버전이고, 파서 본문의 설정값과 별도로 기록한다. 표시 이름은 기존 규칙인 `gcc <주 버전> STM32`, 타깃 분류는 `STM32`를 사용한다.
 

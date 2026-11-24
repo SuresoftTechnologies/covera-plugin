@@ -211,7 +211,7 @@ CMake 보완 옵션과 그 근거만 변경된 경우에는 성공한 원본 빌
 다음 명령으로 같은 작업에 묶인 `decision.json`을 생성한다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_workflow_runner.py" decision --job-context <job.json> --template <decision.template.json> --owner MODEL --choice 'buildSystem="CMAKE"' --reason "활성 CMakeCache가 프로젝트 루트를 가리킴"
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_workflow_runner.py" decision --job-context <job.json> --template <decision.template.json> --owner MODEL --choice 'buildSystem="CMAKE"' --reason "활성 CMakeCache가 프로젝트 루트를 가리킴"
 ```
 
 `originalBuildPlan`처럼 큰 구조화 값은 현재 작업 디렉터리 아래 JSON 파일에 `{"originalBuildPlan": {...}, "originalBuildCommandSource": "MODEL_INFERRED"}` 형태로 저장하고 `--choices-file <파일>`로 전달한다.
@@ -223,7 +223,7 @@ python "${SKILL_ROOT}/scripts/cover_workflow_runner.py" decision --job-context <
 저장소·스크립트·로그에도 고객의 실제 선택 근거가 없으면 다음 형태로 사용자에게 넘긴다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_workflow_runner.py" decision --job-context <job.json> --template <decision.template.json> --owner MODEL --escalate-to-user --reason "두 빌드 엔트리가 동일한 증거를 가짐"
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_workflow_runner.py" decision --job-context <job.json> --template <decision.template.json> --owner MODEL --escalate-to-user --reason "두 빌드 엔트리가 동일한 증거를 가짐"
 ```
 
 사용자 답을 기록할 때 `originalBuildCommandSource=USER_CONFIRMED_FALLBACK`을 함께 남긴다. 모델의 파일 내용·관계 해석은 `MODEL_INFERRED`, 스크립트 자동 확정은 `SCRIPT_EXTRACTED`로 구분하되, 이 origin 값은 계획 생성 경로이고 조사서의 근거 출처는 `evidenceSource`다.

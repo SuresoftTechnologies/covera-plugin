@@ -7,8 +7,8 @@
 스킬 폴더에서 실행하는 예시. `D:/build/app`은 실제 오류 명령을 실행한 작업 폴더로 바꾼다.
 
 ```powershell
-python "${SKILL_ROOT}/scripts/cover_recovery.py" discover --source src/main.cpp --project-root D:/build/app
-python "${SKILL_ROOT}/scripts/cover_recovery.py" start --source src/main.cpp --project-root D:/build/app --run-dir D:/recovery/case-01
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" discover --source src/main.cpp --project-root D:/build/app
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" start --source src/main.cpp --project-root D:/build/app --run-dir D:/recovery/case-01
 ```
 
 - `discover`: 설정과 로컬 자료를 읽어 후보·누락 조건을 반환한다. 서버 요청은 없다.

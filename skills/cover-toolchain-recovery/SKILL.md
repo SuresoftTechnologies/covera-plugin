@@ -5,13 +5,27 @@ user-invocable: true
 disable-model-invocation: false
 ---
 
-## 설치 경로와 호스트 연결
+## 설치 경로와 실행 런타임
 
-PLUGIN_ROOT는 이 진입점이 속한 설치 플러그인 루트다. skills/<id>/SKILL.md에서는 ../..이다. 공용 scripts/assets/data는 플러그인 루트에 한 번만 배치한다. 스킬의 references와 보조 문서는 해당 스킬 파일 기준이다.
+이 스킬 패키지에는 실행 코드가 없다. 실행 코드와 Python 런타임은 COVER EE Local Agent에 포함된 COVERA Agent Kit(`agent_kit`)에 있고, 이 스킬은 그 코드를 실행하도록 안내한다. 이 문서와 `references/`의 링크는 지금 읽은 SKILL.md의 부모 디렉터리(SKILL_ROOT) 기준이다.
 
-`${PLUGIN_ROOT}`와 `${PLUGIN_DATA}`가 셸에 자동 설정됐다고 가정하지 않는다. 로드한 파일의 실제 위치로 루트를 확인하고, 실행할 때 실제 절대경로로 대체하거나 동일 셸 호출에서 변수를 설정한다. PLUGIN_DATA는 호스트가 제공하는 영속 데이터 경로를 우선 사용하고, 없으면 사용자 데이터 디렉터리 아래 이 플러그인 전용 경로를 사용한다. 사용자의 분석 대상 작업 디렉터리는 바꾸지 않는다. bash 예제는 bash에서 실행한다.
+첫 실행 전에 아래 값을 한 번 확인하고 같은 대화에서 재사용한다. `${...}` 표기는 설명용이며 자동 설정된 환경변수가 아니다. 실행할 때 실제 절대경로로 바꾸고 따옴표로 감싼다.
 
-SKILL_ROOT는 지금 읽은 SKILL.md의 부모 디렉터리다. 이 스킬 전용 scripts/assets는 SKILL_ROOT 아래에 있다. `${SKILL_ROOT}`는 설명용 표기이며 자동 설정된 환경변수가 아니다. 스크립트 실행 시 로드한 SKILL.md의 실제 위치로 절대경로를 구성한다. 프로젝트 작업 디렉터리를 스킬 폴더로 바꾸지 않는다.
+- `INSTALL_PATH`: 환경 변수 `CODESCROLL_TM_INSTALL_PATH`의 값이다. 값이 없거나 아래 확인에 실패하면 Local Agent 설치 폴더 경로를 사용자에게 요청하고 입력을 기다린다. 다른 위치를 추측해 탐색하지 않고 환경변수를 수정하지 않는다.
+- `KIT_PYTHON`: Agent Kit에 포함된 Python이다. Windows는 `${INSTALL_PATH}/agent_kit/python/python.exe`, Linux는 `${INSTALL_PATH}/agent_kit/python/bin/python3`이다. 시스템 Python이나 PATH의 Python을 쓰지 않는다.
+- `KIT_SKILL_ROOT`: `${INSTALL_PATH}/agent_kit/plugins/skills/cover-toolchain-recovery`이다. 이 스킬의 스크립트(`scripts/`)와 실행 중에 읽는 데이터 파일이 여기에 있다.
+
+`KIT_PYTHON`과 `${KIT_SKILL_ROOT}/scripts/cover_recovery.py`가 모두 있어야 진행한다.
+하나라도 없으면 프로젝트 조사·빌드·서버 연결을 시작하지 말고 아래 안내를 보여준 뒤 멈춘다. 실행 코드를 다른 곳에서 내려받거나 직접 작성해 대신하지 않는다.
+
+```text
+[설치 확인]
+• 확인한 Local Agent 경로: {INSTALL_PATH 또는 "설정되지 않음"}
+• 필요: COVERA Agent Kit(agent_kit)이 포함된 COVER EE Local Agent 4.9(4 Service Pack 9) 이상
+• 제품 설치·지원: bizcenter@suresofttech.com
+```
+
+사용자의 분석 대상 작업 디렉터리는 바꾸지 않는다. bash 예제는 bash에서 실행한다.
 
 # COVER 툴체인 복구
 
@@ -39,7 +53,7 @@ SKILL_ROOT는 지금 읽은 SKILL.md의 부모 디렉터리다. 이 스킬 전�
 - tmpa 검증은 COVER 서버의 실행 요청·상태 조회·오류 자료 다운로드 API로 수행한다.
 - 서버 반영에는 메인 서버 주소, Access key 환경변수, HardwareID, 실제 C/C++ Wrapper 이름이 필요하다. 이미 확인한 값은 다시 묻지 않는다.
 
-Python 3.11 이상과 표준 라이브러리를 사용한다. 먼저 실행 가능한 Python 경로를 확인한다. `${SKILL_ROOT}`는 이 SKILL.md가 있는 실제 디렉터리이며 자동 환경변수가 아니다. 예시의 스크립트 경로를 이 파일 기준 절대경로로 바꾸고 따옴표로 감싼다. 대상 프로젝트의 작업 디렉터리는 유지한다. DB를 메모리에서 읽는 `sqlite3.deserialize`가 필요하다.
+Agent Kit에 포함된 Python(`${KIT_PYTHON}`)과 표준 라이브러리를 사용하며, 시스템 Python을 찾지 않는다. 예시의 `${KIT_PYTHON}`과 `${KIT_SKILL_ROOT}`는 위에서 확인한 절대경로로 바꾸고 따옴표로 감싼다. 대상 프로젝트의 작업 디렉터리는 유지한다. DB를 메모리에서 읽는 `sqlite3.deserialize`를 쓰므로 Agent Kit의 Python은 3.11 이상이어야 한다.
 
 ## 필수 진입 절차
 
@@ -57,7 +71,7 @@ Python 3.11 이상과 표준 라이브러리를 사용한다. 먼저 실행 가�
 자세한 위치·식별 규칙은 [오류 자료 탐색](references/artifact-discovery.md)을 읽는다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" start --project-root <빌드작업폴더> --source <소스명또는전체경로> --run-dir <새실행폴더>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" start --project-root <빌드작업폴더> --source <소스명또는전체경로> --run-dir <새실행폴더>
 ```
 
 - 확인된 서버 주소·HardwareID와 Access key 환경변수가 있으면 오류 조회·다운로드까지 이어간다.
@@ -73,7 +87,7 @@ python "${SKILL_ROOT}/scripts/cover_recovery.py" start --project-root <빌드작
 이미 ZIP/폴더가 있으면 서버 연결 없이 시작한다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" start --artifacts <오류ZIP또는폴더> --source <원래소스경로> --run-dir <새실행폴더>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" start --artifacts <오류ZIP또는폴더> --source <원래소스경로> --run-dir <새실행폴더>
 ```
 
 로컬 ZIP/폴더는 진단용으로 읽을 수 있다. 서버 API는 ZIP 업로드를 받지 않으므로 실제 검증에는 `start` 또는 `collect`로 서버 Issue에서 수집한 case가 필요하다. 이미 받은 로컬 ZIP을 서버에서 실행했다고 표시하지 않는다. [PA 실행 계약](references/server-execution.md)을 따른다.
@@ -81,7 +95,7 @@ python "${SKILL_ROOT}/scripts/cover_recovery.py" start --artifacts <오류ZIP또
 서버 수집이 필요하면 [서버 API 계약](references/server-api.md)을 읽는다. Access key는 `COVER_ACCESS_KEY` 환경변수 또는 `--access-key-env`로 지정한 환경변수에서 받는다. 값에는 `Bearer ` 접두어를 넣지 않는다. 채팅, 명령행 인수, 보고서에 키를 넣지 않고 환경변수 전체를 출력하지 않는다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" collect --server <HTTPS서버URL> --hardware-id <HardwareID> --source <원래소스경로> --archive <새ZIP경로> --run-dir <새실행폴더>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" collect --server <HTTPS서버URL> --hardware-id <HardwareID> --source <원래소스경로> --archive <새ZIP경로> --run-dir <새실행폴더>
 ```
 
 ## 2. 진단과 후보 작성
@@ -106,7 +120,7 @@ python "${SKILL_ROOT}/scripts/cover_recovery.py" collect --server <HTTPS서버UR
 [PA 실행 계약](references/server-execution.md)과 [서버 API 계약](references/server-api.md)을 읽는다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" verify --case <실행폴더/case.json> --candidate <후보.json>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" verify --case <실행폴더/case.json> --candidate <후보.json>
 ```
 
 - `verify`는 수집한 서버·HardwareID·소스 경로와 DB의 `Compiler.idCompiler`, 수정한 전체 설정 줄을 POST한다. DB·INI·소스를 업로드하지 않는다. 서버가 최신 `PA_ERROR_RESULT`의 복사본에서 실행한다.
@@ -126,13 +140,13 @@ python "${SKILL_ROOT}/scripts/cover_recovery.py" verify --case <실행폴더/cas
 `publish-plan`은 서버를 읽고 대상·설정·표시 정보·이전 연결을 고정한다. 검증된 GCC `gnu_version`으로 표시 버전을 맞추고, 확인된 `target`과 복구 식별자만 이름에 넣는다. `win64`만으로 MinGW라고 추측하지 않는다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" publish-plan --case <실행폴더/case.json> --server <서버URL> --hardware-id <HardwareID> --wrapper <Wrapper이름>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" publish-plan --case <실행폴더/case.json> --server <서버URL> --hardware-id <HardwareID> --wrapper <Wrapper이름>
 ```
 
 대상 서버·HardwareID·Wrapper, 기존/새 툴체인과 설정 diff를 확인하고 바로 다음 명령을 실행한다. 변경 내용은 진행 상황으로 알리되 사용자 응답을 기다리지 않는다.
 
 ```text
-python "${SKILL_ROOT}/scripts/cover_recovery.py" publish --case <실행폴더/case.json> --server <서버URL> --plan-digest <생성한 plan_digest>
+"${KIT_PYTHON}" "${KIT_SKILL_ROOT}/scripts/cover_recovery.py" publish --case <실행폴더/case.json> --server <서버URL> --plan-digest <생성한 plan_digest>
 ```
 
 계획이나 검증 설정이 바뀌면 기존 계획으로 진행하지 않고 변경된 조건을 다시 검증한다. 실패 시 자동 재전송·되돌리기를 하지 않고 `rollback.json`과 서버 상태를 대조한다. 현재 상태와 되돌릴 범위가 확인되면 별도 승인 없이 복구 절차를 진행한다.
