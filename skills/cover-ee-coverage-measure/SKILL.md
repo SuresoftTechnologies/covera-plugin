@@ -1,7 +1,6 @@
 ---
 name: cover-ee-coverage-measure
-description: COVER EE 서버에 저장된 특정 모듈의 커버리지 측정 결과를 조회하고 모듈 요약과 파일·함수별 결과를 설명한다. 모듈 커버리지,
-  미달성 파일 또는 함수 조회 요청에 사용한다. 프로그램 실행이나 새 측정, 빌드, STM32 메모리 수집은 수행하지 않는다.
+description: Looks up the coverage results of a module stored on the COVER EE server and explains the module summary and the per-file and per-function results. Use it for requests about a module's coverage or its uncovered files or functions. It does not run programs, take new measurements, build, or collect STM32 memory.
 user-invocable: true
 disable-model-invocation: false
 ---

@@ -1,8 +1,6 @@
 ---
 name: cover-toolchain-recovery
-description: COVER C/C++ 복구 요청 또는 분석 오류 발견 시, 제공 자료나 서버 Issue에서 오류 자료를 확보하고 COVER
-  서버의 tmpa-run API로 복구 설정을 검증한다. 검증 성공 후 서버 반영·Wrapper 연결을 자동으로 진행하고 재빌드를 인계한다. 원본
-  소스 수정은 대상이 아니다.
+description: Recovers C/C++ files that COVER excluded because of analysis errors. Use it when asked for a recovery or when an analysis error is found. It gets the error data from the provided files or the server's Issue and verifies a recovery configuration with the COVER server's tmpa-run API. After a successful verification it registers the configuration on the server, connects the wrapper, and hands off for a rebuild. It does not modify the original source.
 user-invocable: true
 disable-model-invocation: false
 ---

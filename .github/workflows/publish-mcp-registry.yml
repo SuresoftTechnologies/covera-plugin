@@ -2,7 +2,7 @@
 # server.json to the official MCP Registry -- all from one pushed tag.
 #
 # The plugin and the MCP server share one version, and one vX.Y.Z tag on main
-# releases both (e.g. v0.1.2). Per release a maintainer bumps that version in
+# releases both (e.g. v0.1.3). Per release a maintainer bumps that version in
 # every tracked manifest and pushes the tag (see RELEASING.md). This workflow
 # then:
 #   1. checks the tag matches the version in every tracked manifest
@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)publish, e.g. v0.1.2"
+        description: "Existing tag to (re)publish, e.g. v0.1.3"
         required: true
 
 permissions:
