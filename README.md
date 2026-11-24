@@ -62,7 +62,7 @@ The coding agent picks the skill from your request; you can also run one directl
 
 COVERA also ships an MCP server that exposes the same three skills to any MCP client — Claude Desktop, Cursor, VS Code, and others — not only to agents that load the skills. A client with no skills still gets the full flow: run a coverage build, look up a module's coverage, and recover a toolchain error. The procedure each skill follows is served back through a tool (`covera_get_guide`), so a skill-less client has the same guidance to work from.
 
-It is listed in the official MCP registry as `io.github.SuresoftTechnologies/covera-mcp`, and is versioned independently of the plugin (its release tags are prefixed `mcp-v`).
+It is listed in the official MCP registry as `io.github.SuresoftTechnologies/covera-mcp`, and shares the plugin's version: each `vX.Y.Z` release publishes both.
 
 Three ways to run it:
 

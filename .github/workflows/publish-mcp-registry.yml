@@ -1,12 +1,11 @@
 # Builds the MCP bundle, attaches it to a GitHub release, and publishes
 # server.json to the official MCP Registry -- all from one pushed tag.
 #
-# The MCP server is versioned independently of the Claude Code / Gemini plugin,
-# so its release tags are prefixed mcp-v (e.g. mcp-v0.1.0). Plugin releases
-# (v*) do not trigger this workflow. Per release a maintainer bumps the MCP
-# version in the tracked files and pushes an mcp-vX.Y.Z tag (see RELEASING.md).
-# This workflow then:
-#   1. checks the tag matches the version in the MCP's tracked files
+# The plugin and the MCP server share one version, and one vX.Y.Z tag on main
+# releases both (e.g. v0.1.2). Per release a maintainer bumps that version in
+# every tracked manifest and pushes the tag (see RELEASING.md). This workflow
+# then:
+#   1. checks the tag matches the version in every tracked manifest
 #   2. packs the .mcpb bundle (mcpb pack is not reproducible, so it is built
 #      here once and that exact file is both released and hashed)
 #   3. creates the GitHub release and uploads the bundle
@@ -26,11 +25,11 @@ name: Publish to MCP Registry
 on:
   push:
     tags:
-      - "mcp-v*"
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)publish, e.g. mcp-v0.1.0"
+        description: "Existing tag to (re)publish, e.g. v0.1.2"
         required: true
 
 permissions:
@@ -58,15 +57,17 @@ jobs:
         run: |
           set -euo pipefail
           version="$(jq -r '.version' server.json)"
-          if [ "mcp-v${version}" != "${TAG}" ]; then
+          if [ "v${version}" != "${TAG}" ]; then
             echo "::error::Tag ${TAG} does not match server.json version v${version}." \
-                 "Bump the MCP version fields and tag that commit (see RELEASING.md)."
+                 "Bump the version in every tracked manifest and tag that commit (see RELEASING.md)."
             exit 1
           fi
-          manifest_v="$(jq -r '.version' manifest.json)"
-          if [ "$manifest_v" != "$version" ]; then
-            echo "::error::manifest.json has version $manifest_v, expected $version."; exit 1
-          fi
+          for f in manifest.json plugin.json .claude-plugin/plugin.json gemini-extension.json; do
+            v="$(jq -r '.version' "$f")"
+            if [ "$v" != "$version" ]; then
+              echo "::error::$f has version $v, expected $version."; exit 1
+            fi
+          done
           pyproject_v="$(grep -oE 'version\s*=\s*"[^"]+"' pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')"
           if [ "$pyproject_v" != "$version" ]; then
             echo "::error::pyproject.toml has version $pyproject_v, expected $version."; exit 1

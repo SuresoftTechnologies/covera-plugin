@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 from . import guides
 from . import tools as catalog
 
-SERVER_INFO = {"name": "covera-mcp", "title": "COVERA", "version": "0.1.0"}
+SERVER_INFO = {"name": "covera-mcp", "title": "COVERA", "version": "0.1.2"}
 # Newest first. An unknown requested version is answered with the newest.
 SUPPORTED_PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 MIN_PYTHON = (3, 11)
