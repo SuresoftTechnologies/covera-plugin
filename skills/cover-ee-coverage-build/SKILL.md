@@ -1,9 +1,6 @@
 ---
 name: cover-ee-coverage-build
-description: 자연어 요청을 받아 C/C++, C#, Java 프로젝트의 COVER EE 커버리지 빌드를 준비·수행·검증하고, 성공한 설정을
-  이후 IDE·일반 빌드에서 재사용할 수 있게 프로젝트에 적용한다. CMake, Visual Studio/MSBuild, 직접 Make, STM32CubeIDE,
-  C# COVER Toolbox, Java JACOV CLI/Maven/Gradle 환경에서 원본 빌드와 실제 도구를 식별하고 원본 출력 경로를
-  유지하여 커버리지 빌드를 수행할 때 사용한다.
+description: Prepares, runs, and verifies a COVER EE coverage build of a C/C++, C#, or Java project from a natural-language request, then applies the successful setup to the project so later IDE and command-line builds reuse it. Use it to make a coverage build that identifies the original build and the actual tools in CMake, Visual Studio/MSBuild, plain Make, STM32CubeIDE, C# COVER Toolbox, or Java JACOV CLI/Maven/Gradle environments and keeps the original output paths.
 user-invocable: true
 disable-model-invocation: false
 ---
